@@ -54,6 +54,12 @@ Set `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_BUCKET`
 
 Each AI recommendation includes a playable source preview and start/end sliders. Drag either slider to correct the cut, then use **Preview selected cut** to watch only that selection. Klips may be up to 90 seconds long. The revised timestamps save automatically and are used by **Create vertical clip**.
 
+Each klip also includes a 9:16 subject-framing control. The preview shows the actual vertical crop instead of the uncropped source. Move the horizontal focal slider or use Left, Center, and Right presets to center an off-axis speaker; the saved position is used by both the individual FFmpeg export and editable Auto-Mix moments.
+
+Downloaded MP4 files use a Mac/iPhone-safe compatibility profile: H.264/AVC with an `avc1` video tag, `yuv420p`, constant 30 fps, AAC-LC stereo at 48 kHz, and fast-start metadata. These settings are used for individual klips, browser previews, and Auto-Mix outputs to improve loading in QuickTime, Photos, AirDrop, and social-platform uploaders.
+
+Saved projects now include permanent deletion controls. Creators can delete an entire batch from Recent Harvests or the results screen, delete one source video and its klips, remove only an individual rendered MP4, remove an Auto-Mix MP4, or remove an uploaded mixer track. Confirmed deletions remove matching local source, preview, transcript audio, export, and project files, delete PostgreSQL metadata, and remove private R2 source objects when cloud storage is enabled.
+
 KlipPharma first tries the original video in the browser, then converts camera formats such as MOV/HEVC into a browser-safe H.264 MP4. If a saved project predates this converter or playback fails, select **Retry preview** inside the preview panel. Preview conversion runs locally and does not use OpenAI credits. If an unusual source can only be converted without preview audio, the final rendered klip still uses the source audio.
 
 ## Batch processing

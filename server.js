@@ -14,6 +14,7 @@ import {
   authenticateUser,
   createSession,
   createUser,
+  deleteDatabaseProject,
   deleteSession,
   findSessionUser,
   initializeDatabase,
@@ -24,6 +25,7 @@ import {
 import {
   assertOwnedKey,
   createDirectUpload,
+  deleteObject,
   downloadObject,
   objectStorageConfigured,
   verifyObject,
@@ -127,6 +129,7 @@ app.post("/api/auth/logout", async (req, res) => {
 
 app.use("/api/uploads", requireUser);
 app.use("/api/projects", requireUser);
+app.use("/api/batches", requireUser);
 
 app.post("/api/uploads/presign", async (req, res) => {
   if (!objectStorageConfigured) return res.status(409).json({ error: "Direct cloud uploads are not enabled on this installation." });
@@ -163,6 +166,50 @@ app.get("/api/projects", (req, res) => {
       error: job.error,
     }));
   res.json({ projects });
+});
+
+app.delete("/api/batches/:batchId", async (req, res) => {
+  const group = [...jobs.values()].filter((job) => (
+    job.userId === req.user.id && String(job.batchId || job.id) === String(req.params.batchId)
+  ));
+  if (!group.length) return res.status(404).json({ error: "Batch not found." });
+  if (group.some(jobIsBusy)) return res.status(409).json({ error: "Wait for processing or rendering to finish before deleting this batch." });
+  try {
+    await Promise.all(group.map((job) => deleteJobPermanently(job)));
+    res.json({ ok: true, deleted: group.length });
+  } catch (error) {
+    console.error("Batch deletion failed:", error);
+    res.status(500).json({ error: "KlipPharma could not completely delete that batch. Try again." });
+  }
+});
+
+app.delete("/api/projects/:id", async (req, res) => {
+  const job = ownedJob(req, req.params.id);
+  if (!job) return res.status(404).json({ error: "Project not found." });
+  if (jobIsBusy(job)) return res.status(409).json({ error: "Wait for processing or rendering to finish before deleting this video." });
+  const batchId = job.batchId || job.id;
+  const survivors = [...jobs.values()].filter((item) => (
+    item.userId === req.user.id && item.id !== job.id && String(item.batchId || item.id) === String(batchId)
+  ));
+  try {
+    await deleteJobPermanently(job);
+    if (survivors.length) {
+      removeBatchMontageFiles(batchId);
+      survivors.forEach((item, index) => {
+        if (item.montage) {
+          removeStoredMontageAudio(item);
+          delete item.montage;
+        }
+        item.batchPosition = index + 1;
+        item.batchSize = survivors.length;
+        persistJob(item);
+      });
+    }
+    res.json({ ok: true, remaining: survivors.map((item) => item.id) });
+  } catch (error) {
+    console.error("Project deletion failed:", error);
+    res.status(500).json({ error: "KlipPharma could not completely delete that video. Try again." });
+  }
 });
 
 app.post("/api/projects", upload.any(), (req, res) => {
@@ -228,6 +275,8 @@ function createProjectBatch(req, files, fileOptions = []) {
       montageStyle: normalizeMontageStyle(req.body.montageStyle),
       watermarkText: normalizeWatermarkText(req.body.watermarkText),
       watermarkPosition: normalizeOverlayPosition(req.body.watermarkPosition),
+      planTier: normalizePlanTier(req.user.planTier),
+      klipPharmaWatermarkRequired: !hasPaidPlan(req.user.planTier),
       audience: req.body.audience || "General audience",
       goal: req.body.goal || "High-retention social clips",
       platform: req.body.platform || "Instagram Reels",
@@ -291,6 +340,8 @@ app.get("/api/projects/:id", (req, res) => {
   const job = ownedJob(req, req.params.id);
   if (!job) return res.status(404).json({ error: "Project not found." });
   const safe = { ...job, montage: job.montage ? { ...job.montage } : undefined };
+  safe.planTier = normalizePlanTier(req.user.planTier);
+  safe.klipPharmaWatermarkRequired = !hasPaidPlan(req.user.planTier);
   if (!isAudioOnly(job.filePath)) safe.sourceUrl = `/api/projects/${job.id}/source`;
   if (safe.montage && job.montageAudioPath && fs.existsSync(job.montageAudioPath)) {
     safe.montage.audioName = job.montageAudioName || "Added sound";
@@ -357,6 +408,19 @@ app.delete("/api/projects/:id/montage/audio", (req, res) => {
   res.json({ ok: true });
 });
 
+app.delete("/api/projects/:id/montage/export", (req, res) => {
+  const owner = ownedJob(req, req.params.id);
+  if (!owner?.montage) return res.status(404).json({ error: "Auto-Mix not found." });
+  if (owner.montage.status === "rendering") return res.status(409).json({ error: "Wait for the current Auto-Mix render to finish." });
+  removeBatchMontageFiles(owner.batchId || owner.id);
+  owner.montage.status = "deleted";
+  owner.montage.progress = 100;
+  owner.montage.error = "The Auto-Mix MP4 was deleted.";
+  delete owner.montage.downloadUrl;
+  persistJob(owner);
+  res.json({ ok: true });
+});
+
 app.post("/api/projects/:id/preview", async (req, res) => {
   const job = ownedJob(req, req.params.id);
   if (!job) return res.status(404).json({ error: "Project not found." });
@@ -392,6 +456,8 @@ app.post("/api/projects/:id/montage/render", (req, res) => {
   if (new Set(["bottom", "middle", "top"]).has(req.body.captionPosition)) owner.montage.captionPosition = req.body.captionPosition;
   if (typeof req.body.watermarkText === "string") owner.watermarkText = normalizeWatermarkText(req.body.watermarkText);
   if (req.body.watermarkPosition) owner.watermarkPosition = normalizeOverlayPosition(req.body.watermarkPosition);
+  owner.planTier = normalizePlanTier(req.user.planTier);
+  owner.klipPharmaWatermarkRequired = !hasPaidPlan(req.user.planTier);
   owner.montage.sourceVolume = normalizeMixerPercent(req.body.sourceVolume, owner.montage.sourceVolume ?? 100);
   owner.montage.addedAudioVolume = normalizeMixerPercent(req.body.addedAudioVolume, owner.montage.addedAudioVolume ?? 35);
   owner.montage.audioStart = normalizeAudioSeconds(req.body.audioStart, owner.montage.audioStart ?? 0, 90);
@@ -406,7 +472,7 @@ app.post("/api/projects/:id/montage/render", (req, res) => {
   delete owner.montage.downloadUrl;
   persistJob(owner);
 
-  const task = renderBatchMontage(group, owner, segments)
+  const task = renderBatchMontage(group, owner, segments, req.user.planTier)
     .catch((error) => {
       console.error("Auto-Mix rebuild failed:", error);
       owner.montage.status = "failed";
@@ -441,6 +507,7 @@ app.patch("/api/projects/:id/clips/:clipId", (req, res) => {
   if (new Set(["bottom", "middle", "top"]).has(req.body.captionPosition)) clip.captionPosition = req.body.captionPosition;
   if (typeof req.body.watermarkText === "string") clip.watermarkText = normalizeWatermarkText(req.body.watermarkText);
   if (req.body.watermarkPosition) clip.watermarkPosition = normalizeOverlayPosition(req.body.watermarkPosition);
+  clip.focusX = normalizeFocusX(req.body.focusX, clip.focusX ?? 50);
   clip.renderStatus = "idle";
   delete clip.downloadUrl;
   delete clip.renderError;
@@ -453,15 +520,30 @@ app.post("/api/projects/:id/clips/:clipId/render", async (req, res) => {
   const clip = job?.clips?.find((item) => item.id === req.params.clipId);
   if (!job || !clip) return res.status(404).json({ error: "Clip not found." });
   if (clip.renderStatus === "rendering") return res.status(202).json({ status: "rendering" });
+  job.planTier = normalizePlanTier(req.user.planTier);
+  job.klipPharmaWatermarkRequired = !hasPaidPlan(req.user.planTier);
   clip.renderStatus = "rendering";
   persistJob(job);
   res.status(202).json({ status: "rendering" });
-  renderClip(job, clip).catch((error) => {
+  renderClip(job, clip, req.user.planTier).catch((error) => {
     console.error(error);
     clip.renderStatus = "failed";
     clip.renderError = friendlyError(error);
     persistJob(job);
   });
+});
+
+app.delete("/api/projects/:id/clips/:clipId/export", (req, res) => {
+  const job = ownedJob(req, req.params.id);
+  const clip = job?.clips?.find((item) => item.id === req.params.clipId);
+  if (!job || !clip) return res.status(404).json({ error: "Klip not found." });
+  if (clip.renderStatus === "rendering") return res.status(409).json({ error: "Wait for the current render to finish." });
+  removeLocalFile(path.join(exportDir, `${job.id}-${clip.id}.mp4`), exportDir);
+  clip.renderStatus = "idle";
+  delete clip.downloadUrl;
+  delete clip.renderError;
+  persistJob(job);
+  res.json({ ok: true });
 });
 
 app.post("/api/projects/:id/clips/:clipId/feedback", (req, res) => {
@@ -524,6 +606,7 @@ async function processProject(job) {
       captionPosition: "bottom",
       watermarkText: job.watermarkText || "",
       watermarkPosition: job.watermarkPosition || "top-right",
+      focusX: 50,
       renderStatus: "idle",
       feedback: null,
     }];
@@ -553,6 +636,7 @@ async function processProject(job) {
     captionPosition: "bottom",
     watermarkText: job.watermarkText || "",
     watermarkPosition: job.watermarkPosition || "top-right",
+    focusX: 50,
     renderStatus: "idle",
     feedback: null,
   }));
@@ -652,14 +736,14 @@ async function chooseClips(job) {
     .sort((a, b) => Number(b.overallScore) - Number(a.overallScore));
 }
 
-async function renderClip(job, clip) {
+async function renderClip(job, clip, planTier = job.planTier) {
   await ensureLocalSource(job);
   const outputName = `${job.id}-${clip.id}.mp4`;
   const outputPath = path.join(exportDir, outputName);
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "klippharma-klip-"));
   try {
     const relevant = (job.segments || []).filter((s) => s.end > clip.start && s.start < clip.end);
-    let filter = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1";
+    let filter = verticalCropFilter(clip.focusX, true);
     const customCaptionText = String(clip.captionText || "").trim();
     const captionCues = customCaptionText
       ? captionCuesFromText(customCaptionText, clip.end - clip.start)
@@ -675,13 +759,23 @@ async function renderClip(job, clip) {
       const escapedSubs = subtitlePath.replaceAll("\\", "/").replaceAll(":", "\\:").replaceAll("'", "\\'");
       filter += `,subtitles='${escapedSubs}':force_style='${captionForceStyle(clip.captionStyle, clip.captionPosition)}'`;
     }
-    if (String(clip.watermarkText || "").trim()) {
-      const watermarkPath = path.join(tempDir, "watermark.srt");
-      writeWatermarkSubtitle(watermarkPath, clip.watermarkText, clip.end - clip.start);
-      filter += watermarkFilter(watermarkPath, clip.watermarkPosition);
-    }
+    filter = appendExportWatermarks(filter, tempDir, {
+      duration: clip.end - clip.start,
+      customText: clip.watermarkText,
+      customPosition: clip.watermarkPosition,
+      brandRequired: !hasPaidPlan(planTier),
+      prefix: "clip",
+    });
     const audioBitrate = job.contentType === "artist" ? "256k" : "160k";
-    await run(ffmpegPath || "ffmpeg", ["-y", "-ss", String(clip.start), "-i", job.filePath, "-t", String(clip.end - clip.start), "-vf", filter, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", "-b:a", audioBitrate, "-movflags", "+faststart", outputPath]);
+    await run(ffmpegPath || "ffmpeg", [
+      "-y", "-fflags", "+genpts", "-ss", String(clip.start), "-i", job.filePath,
+      "-t", String(clip.end - clip.start),
+      "-map", "0:v:0", "-map", "0:a:0?", "-vf", filter,
+      ...quickTimeVideoArgs("23"),
+      ...quickTimeAudioArgs(audioBitrate),
+      "-sn", "-dn", "-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "2048",
+      "-movflags", "+faststart", outputPath,
+    ]);
     clip.renderStatus = "ready";
     clip.downloadUrl = `/exports/${outputName}`;
     persistJob(job);
@@ -720,8 +814,35 @@ function captionForceStyle(style = "bold", position = "bottom") {
   return `${styles[style] || styles.bold},${positions[position] || positions.bottom}`;
 }
 
-function watermarkFilter(watermarkPath, position = "top-right") {
+function appendExportWatermarks(filter, tempDir, {
+  duration,
+  customText,
+  customPosition,
+  brandRequired = true,
+  prefix = "watermark",
+}) {
+  const creatorText = normalizeWatermarkText(customText);
+  if (creatorText) {
+    const creatorPath = path.join(tempDir, `${prefix}-creator.ass`);
+    writeWatermarkSubtitle(creatorPath, creatorText, duration, customPosition, "creator");
+    filter += watermarkFilter(creatorPath);
+  }
+  if (brandRequired) {
+    const requestedPosition = normalizeOverlayPosition(customPosition);
+    const brandPosition = requestedPosition === "top-left" ? "bottom-right" : "top-left";
+    const brandPath = path.join(tempDir, `${prefix}-klippharma.ass`);
+    writeWatermarkSubtitle(brandPath, "KP  •  KLIPPHARMA", duration, brandPosition, "brand");
+    filter += watermarkFilter(brandPath);
+  }
+  return filter;
+}
+
+function watermarkFilter(watermarkPath) {
   const escapedPath = watermarkPath.replaceAll("\\", "/").replaceAll(":", "\\:").replaceAll("'", "\\'");
+  return `,subtitles='${escapedPath}'`;
+}
+
+function writeWatermarkSubtitle(destination, text, duration, position = "top-right", kind = "creator") {
   const alignments = {
     "top-right": 9,
     "top-left": 7,
@@ -729,11 +850,24 @@ function watermarkFilter(watermarkPath, position = "top-right") {
     "bottom-left": 1,
   };
   const alignment = alignments[position] || alignments["top-right"];
-  return `,subtitles='${escapedPath}':force_style='FontName=Arial,FontSize=15,Bold=1,PrimaryColour=&H45FFFFFF,OutlineColour=&H55000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=${alignment},MarginL=45,MarginR=45,MarginV=60'`;
-}
+  const fontSize = kind === "brand" ? 25 : 32;
+  const primaryColour = kind === "brand" ? "&H003CEFB8" : "&H00FFFFFF";
+  const safeText = normalizeWatermarkText(text);
+  const end = assTime(Math.max(0.5, duration));
+  fs.writeFileSync(destination, `[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+ScaledBorderAndShadow: yes
 
-function writeWatermarkSubtitle(destination, text, duration) {
-  fs.writeFileSync(destination, `1\n${srtTime(0)} --> ${srtTime(Math.max(0.5, duration))}\n${normalizeWatermarkText(text)}\n`);
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Watermark,Arial,${fontSize},${primaryColour},${primaryColour},&H00000000,&H90000000,-1,0,0,0,100,100,0,0,3,1,0,${alignment},55,55,75,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,${end},Watermark,,0,0,0,,${safeText}
+`);
 }
 
 function generatePreview(job) {
@@ -763,12 +897,16 @@ async function buildPreview(job) {
   persistJob(job);
   const videoSettings = [
     "-map", "0:v:0",
-    "-vf", "scale=-2:720:force_original_aspect_ratio=decrease,setsar=1",
+    "-vf", "scale=-2:720:force_original_aspect_ratio=decrease,setsar=1,fps=30",
     "-pix_fmt", "yuv420p",
     "-c:v", "libx264",
     "-profile:v", "main",
+    "-level:v", "4.0",
+    "-tag:v", "avc1",
     "-preset", "veryfast",
     "-crf", "27",
+    "-fps_mode", "cfr",
+    "-video_track_timescale", "30000",
     "-sn", "-dn",
     "-max_muxing_queue_size", "1024",
     "-movflags", "+faststart",
@@ -780,7 +918,7 @@ async function buildPreview(job) {
         "-y", "-i", job.filePath,
         "-map", "0:v:0", "-map", "0:a:0?",
         ...videoSettings.slice(2),
-        "-c:a", "aac", "-ac", "2", "-ar", "44100", "-b:a", "128k",
+        "-c:a", "aac", "-profile:a", "aac_low", "-ac", "2", "-ar", "48000", "-b:a", "128k",
         previewPath,
       ],
     },
@@ -863,16 +1001,59 @@ function normalizeMontageStyle(value = "fast") {
 }
 
 function normalizeWatermarkText(value = "") {
-  return String(value || "").replace(/[\r\n\t]+/g, " ").trim().slice(0, 80);
+  return String(value || "")
+    .replace(/[\u0000-\u001f\u007f{}\\]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
 }
 
 function normalizeOverlayPosition(value = "top-right") {
   return new Set(["top-right", "top-left", "bottom-right", "bottom-left"]).has(value) ? value : "top-right";
 }
 
+function normalizePlanTier(value = "free") {
+  const tier = String(value || "free").trim().toLowerCase();
+  return new Set(["paid", "pro", "creator", "studio", "business"]).has(tier) ? tier : "free";
+}
+
+function hasPaidPlan(value) {
+  return normalizePlanTier(value) !== "free";
+}
+
 function normalizeMixerPercent(value, fallback = 100) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.round(Math.min(150, Math.max(0, number))) : fallback;
+}
+
+function normalizeFocusX(value, fallback = 50) {
+  const number = Number(value);
+  const safeFallback = Number.isFinite(Number(fallback)) ? Number(fallback) : 50;
+  return Math.round(Math.min(100, Math.max(0, Number.isFinite(number) ? number : safeFallback)) * 10) / 10;
+}
+
+function verticalCropFilter(focusX = 50, includeFps = false) {
+  const normalized = normalizeFocusX(focusX) / 100;
+  const fps = includeFps ? ",fps=30" : "";
+  return `scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:x='max(0,min(iw-ow,(iw-ow)*${normalized.toFixed(4)}))':y=0,setsar=1${fps}`;
+}
+
+function quickTimeVideoArgs(crf = "23") {
+  return [
+    "-c:v", "libx264",
+    "-pix_fmt", "yuv420p",
+    "-profile:v", "high",
+    "-level:v", "4.1",
+    "-tag:v", "avc1",
+    "-preset", "veryfast",
+    "-crf", String(crf),
+    "-fps_mode", "cfr",
+    "-video_track_timescale", "30000",
+  ];
+}
+
+function quickTimeAudioArgs(bitrate = "160k") {
+  return ["-c:a", "aac", "-profile:a", "aac_low", "-ar", "48000", "-ac", "2", "-b:a", bitrate];
 }
 
 function normalizeAudioSeconds(value, fallback = 0, maximum = 90) {
@@ -886,6 +1067,49 @@ function removeStoredMontageAudio(owner) {
   delete owner.montageAudioPath;
   delete owner.montageAudioName;
   delete owner.montageAudioMime;
+}
+
+function jobIsBusy(job) {
+  return job.status === "queued"
+    || job.status === "processing"
+    || job.clips?.some((clip) => clip.renderStatus === "rendering")
+    || job.montage?.status === "rendering";
+}
+
+async function deleteJobPermanently(job) {
+  if (job.objectKey) await deleteObject(job.userId, job.objectKey);
+  removeLocalFile(job.filePath, uploadDir);
+  removeLocalFile(job.audioPath, uploadDir);
+  removeLocalFile(job.montageAudioPath, uploadDir);
+  for (const name of fs.readdirSync(uploadDir)) {
+    if (name.startsWith(`${job.id}-audio-`)) removeLocalFile(path.join(uploadDir, name), uploadDir);
+  }
+  removeLocalFile(path.join(exportDir, `${job.id}-preview.mp4`), exportDir);
+  for (const clip of job.clips || []) removeLocalFile(path.join(exportDir, `${job.id}-${clip.id}.mp4`), exportDir);
+  if (job.montage) removeBatchMontageFiles(job.batchId || job.id);
+  removeLocalFile(path.join(projectsDir, `${job.id}.json`), projectsDir);
+  jobs.delete(job.id);
+  await deleteDatabaseProject(job.id, job.userId);
+}
+
+function removeBatchMontageFiles(batchId) {
+  const safeBatchId = String(batchId || "");
+  if (!safeBatchId) return;
+  removeLocalFile(path.join(exportDir, `${safeBatchId}-automix.mp4`), exportDir);
+  for (const name of fs.readdirSync(exportDir)) {
+    if (name.startsWith(`.${safeBatchId}-automix-`) && name.endsWith(".pending.mp4")) {
+      removeLocalFile(path.join(exportDir, name), exportDir);
+    }
+  }
+}
+
+function removeLocalFile(filePath, allowedRoot) {
+  if (!filePath) return;
+  const root = path.resolve(allowedRoot);
+  const target = path.resolve(filePath);
+  const relative = path.relative(root, target);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return;
+  if (fs.existsSync(target) && fs.statSync(target).isFile()) fs.unlinkSync(target);
 }
 
 function maybeStartBatchMontage(batchId) {
@@ -912,7 +1136,7 @@ function maybeStartBatchMontage(batchId) {
   batchMontageTasks.set(batchId, task);
 }
 
-async function renderBatchMontage(group, owner, editedSegments = null) {
+async function renderBatchMontage(group, owner, editedSegments = null, planTier = owner.planTier) {
   await Promise.all(group.map((job) => ensureLocalSource(job)));
   const command = ffmpegPath || "ffmpeg";
   const targetDuration = normalizeMontageLength(owner.montage.targetDuration);
@@ -928,12 +1152,11 @@ async function renderBatchMontage(group, owner, editedSegments = null) {
 
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "klippharma-automix-"));
   const pendingOutputPath = path.join(exportDir, `.${owner.batchId}-automix-r${Number(owner.montage.revision || 1)}.pending.mp4`);
-  const watermarkText = normalizeWatermarkText(owner.watermarkText);
   try {
     for (let index = 0; index < segments.length; index += 1) {
       const segment = segments[index];
       const piecePath = path.join(tempDir, `piece-${String(index).padStart(3, "0")}.mp4`);
-      let filter = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30";
+      let filter = verticalCropFilter(segment.focusX, true);
       if (owner.montage.captionsEnabled !== false && segment.captionText) {
         const captionPath = path.join(tempDir, `captions-${String(index).padStart(3, "0")}.srt`);
         const cues = captionCuesFromText(segment.captionText, segment.duration);
@@ -941,27 +1164,29 @@ async function renderBatchMontage(group, owner, editedSegments = null) {
         const escapedCaptions = captionPath.replaceAll("\\", "/").replaceAll(":", "\\:").replaceAll("'", "\\'");
         filter += `,subtitles='${escapedCaptions}':force_style='${captionForceStyle(owner.montage.captionStyle, owner.montage.captionPosition)}'`;
       }
-      if (watermarkText) {
-        const watermarkPath = path.join(tempDir, `watermark-${String(index).padStart(3, "0")}.srt`);
-        writeWatermarkSubtitle(watermarkPath, watermarkText, segment.duration);
-        filter += watermarkFilter(watermarkPath, owner.watermarkPosition);
-      }
+      filter = appendExportWatermarks(filter, tempDir, {
+        duration: segment.duration,
+        customText: owner.watermarkText,
+        customPosition: owner.watermarkPosition,
+        brandRequired: !hasPaidPlan(planTier),
+        prefix: `automix-${String(index).padStart(3, "0")}`,
+      });
       const hasAudio = await probeHasAudio(command, segment.job.filePath);
       const args = hasAudio
         ? [
-          "-y", "-ss", String(segment.start), "-i", segment.job.filePath, "-t", String(segment.duration),
+          "-y", "-fflags", "+genpts", "-ss", String(segment.start), "-i", segment.job.filePath, "-t", String(segment.duration),
           "-map", "0:v:0", "-map", "0:a:0?", "-vf", filter,
-          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "23",
-          "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "160k",
-          "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", piecePath,
+          ...quickTimeVideoArgs("23"), ...quickTimeAudioArgs("160k"),
+          "-sn", "-dn", "-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "2048",
+          "-movflags", "+faststart", piecePath,
         ]
         : [
-          "-y", "-ss", String(segment.start), "-i", segment.job.filePath,
+          "-y", "-fflags", "+genpts", "-ss", String(segment.start), "-i", segment.job.filePath,
           "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", String(segment.duration),
           "-map", "0:v:0", "-map", "1:a:0", "-vf", filter,
-          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "23",
-          "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "160k", "-shortest",
-          "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", piecePath,
+          ...quickTimeVideoArgs("23"), ...quickTimeAudioArgs("160k"), "-shortest",
+          "-sn", "-dn", "-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "2048",
+          "-movflags", "+faststart", piecePath,
         ];
       await run(command, args);
       owner.montage.progress = Math.round(((index + 1) / (segments.length + 1)) * 92);
@@ -980,10 +1205,20 @@ async function renderBatchMontage(group, owner, editedSegments = null) {
     const addedAudioVolume = normalizeMixerPercent(owner.montage.addedAudioVolume, 35) / 100;
     const hasAddedAudio = Boolean(owner.montageAudioPath && fs.existsSync(owner.montageAudioPath));
     if (!hasAddedAudio && sourceVolume === 1) {
-      await run(command, ["-y", "-f", "concat", "-safe", "0", "-i", concatPath, "-c", "copy", "-movflags", "+faststart", pendingOutputPath]);
+      await run(command, [
+        "-y", "-fflags", "+genpts", "-f", "concat", "-safe", "0", "-i", concatPath,
+        "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
+        "-tag:v", "avc1", "-video_track_timescale", "30000",
+        "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", pendingOutputPath,
+      ]);
     } else {
       const assembledPath = path.join(tempDir, "assembled.mp4");
-      await run(command, ["-y", "-f", "concat", "-safe", "0", "-i", concatPath, "-c", "copy", assembledPath]);
+      await run(command, [
+        "-y", "-fflags", "+genpts", "-f", "concat", "-safe", "0", "-i", concatPath,
+        "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
+        "-tag:v", "avc1", "-video_track_timescale", "30000",
+        "-avoid_negative_ts", "make_zero", assembledPath,
+      ]);
       owner.montage.progress = 96;
       persistJob(owner);
       if (hasAddedAudio) {
@@ -1017,14 +1252,17 @@ async function renderBatchMontage(group, owner, editedSegments = null) {
           "-y", "-i", assembledPath, ...audioInputArgs,
           "-filter_complex", filterComplex,
           "-map", "0:v:0", "-map", "[a]", "-t", String(duration),
-          "-c:v", "copy", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k",
-          "-movflags", "+faststart", pendingOutputPath,
+          "-c:v", "copy", "-tag:v", "avc1", "-video_track_timescale", "30000",
+          ...quickTimeAudioArgs("192k"),
+          "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", pendingOutputPath,
         ]);
       } else {
         await run(command, [
           "-y", "-i", assembledPath, "-filter_complex", `[0:a]volume=${sourceVolume}[a]`,
-          "-map", "0:v:0", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-          "-movflags", "+faststart", pendingOutputPath,
+          "-map", "0:v:0", "-map", "[a]",
+          "-c:v", "copy", "-tag:v", "avc1", "-video_track_timescale", "30000",
+          ...quickTimeAudioArgs("192k"),
+          "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", pendingOutputPath,
         ]);
       }
     }
@@ -1042,6 +1280,7 @@ async function renderBatchMontage(group, owner, editedSegments = null) {
         start: Math.round(segment.start * 100) / 100,
         end: Math.round((segment.start + segment.duration) * 100) / 100,
         captionText: segment.captionText,
+        focusX: normalizeFocusX(segment.focusX),
       })),
       downloadUrl: `/exports/${outputName}?v=${Number(owner.montage.revision || 1)}`,
     });
@@ -1074,6 +1313,7 @@ function hydrateMontageSegments(group, requested) {
       start: Math.round(start * 100) / 100,
       duration: Math.round((end - start) * 100) / 100,
       captionText: String(item.captionText || "").trim().slice(0, 1000),
+      focusX: normalizeFocusX(item.focusX),
     };
   });
   const duration = hydrated.reduce((sum, segment) => sum + segment.duration, 0);
@@ -1104,7 +1344,7 @@ function selectMontageSegments(group, targetDuration, style) {
         let piecesFromClip = 0;
         while (end - cursor >= 1.25 && piecesFromClip < 12) {
           const duration = Math.min(pieceDuration, end - cursor);
-          queue.push({ job, start: cursor, duration });
+          queue.push({ job, start: cursor, duration, focusX: normalizeFocusX(clip.focusX) });
           cursor += duration;
           piecesFromClip += 1;
         }
@@ -1223,7 +1463,12 @@ function resumePersistedProjects() {
 async function attachUser(req, res, next) {
   try {
     if (authMode === "off") {
-      req.user = { id: "local-owner", email: "local@klippharma.test", local: true };
+      req.user = {
+        id: "local-owner",
+        email: "local@klippharma.test",
+        local: true,
+        planTier: normalizePlanTier(process.env.LOCAL_PLAN || "free"),
+      };
       return next();
     }
     req.user = await findSessionUser(readCookie(req, "klippharma_session"));
@@ -1348,6 +1593,15 @@ function srtTime(seconds) {
   const m = Math.floor((ms % 3600000) / 60000);
   const s = Math.floor((ms % 60000) / 1000);
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(ms % 1000).padStart(3, "0")}`;
+}
+
+function assTime(seconds) {
+  const centiseconds = Math.max(0, Math.floor(seconds * 100));
+  const h = Math.floor(centiseconds / 360000);
+  const m = Math.floor((centiseconds % 360000) / 6000);
+  const s = Math.floor((centiseconds % 6000) / 100);
+  const cs = centiseconds % 100;
+  return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
 }
 
 app.use((error, _req, res, next) => {

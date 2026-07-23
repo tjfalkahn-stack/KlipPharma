@@ -13,6 +13,7 @@ const processingView = $("#processingView");
 const resultsView = $("#resultsView");
 const autoMixBuilder = $("#autoMixBuilder");
 const autoMixToggle = $("#createMontage");
+const deleteBatchButton = $("#deleteBatch");
 let selectedFiles = [];
 const fileModes = new Map();
 let currentProjects = [];
@@ -21,12 +22,32 @@ const previewRecovery = new Map();
 let previewRecoveryQueue = Promise.resolve();
 let creatingAccount = false;
 let uploadMode = "local";
+let currentUser = null;
+const paidPlanTiers = new Set(["paid", "pro", "creator", "studio", "business"]);
 const creatorModeCopy = {
   auto: ["Smart Detect", "Balanced selection for mixed or general content."],
   artist: ["Artist / Music", "Protects complete lyrical phrases, favors memorable song and artist-story moments, and renders final audio at a higher bitrate."],
   podcast: ["Podcast / Interview", "Keeps essential questions and answers together while finding insights, debates, stories, humor, and reactions."],
   monologue: ["Monologue / Talking Head", "Cuts slow introductions and prioritizes cold opens, lessons, hot takes, personal stories, and direct calls to action."],
 };
+
+function isPaidPlan(user = currentUser) {
+  return paidPlanTiers.has(String(user?.planTier || "free").trim().toLowerCase());
+}
+
+function paintBrandPolicy(root = document) {
+  const paid = isPaidPlan();
+  root.querySelectorAll("[data-brand-policy]").forEach((policy) => {
+    policy.classList.toggle("paid", paid);
+    policy.querySelector("[data-brand-policy-title]").textContent = paid
+      ? "Paid export · KlipPharma watermark removed"
+      : "Free/Demo export · KlipPharma watermark locked";
+    policy.querySelector("[data-brand-policy-copy]").textContent = paid
+      ? "Your typed watermark will still be burned into the downloaded MP4."
+      : "Your typed watermark appears too. Subscribe to a paid tier to remove the KlipPharma mark.";
+    policy.querySelector("[data-brand-policy-badge]").textContent = paid ? "PAID" : "LOCKED";
+  });
+}
 
 autoMixToggle.addEventListener("change", paintAutoMixControls);
 paintAutoMixControls();
@@ -213,6 +234,7 @@ function renderResults(projects) {
     section.querySelector(".source-number").textContent = `SOURCE ${index + 1} OF ${projects.length}`;
     section.querySelector(".source-name").textContent = project.originalName;
     section.querySelector(".source-count").textContent = `${project.clips.length} ${project.clips.length === 1 ? "KLIP" : "KLIPS"}`;
+    section.querySelector(".delete-source").addEventListener("click", (event) => deleteSourceProject(project, event.currentTarget));
     const grid = section.querySelector(".project-clip-grid");
     renderProjectClips(project, grid);
     batchGrid.append(section);
@@ -259,7 +281,12 @@ function renderMontage(projects) {
     download.href = montage.downloadUrl;
     download.download = "";
     download.textContent = "Download current MP4";
-    actions.append(badge, review, download);
+    const deleteOutput = document.createElement("button");
+    deleteOutput.type = "button";
+    deleteOutput.className = "automix-delete";
+    deleteOutput.textContent = "Delete Auto-Mix MP4";
+    deleteOutput.addEventListener("click", () => deleteMontageExport(owner, deleteOutput));
+    actions.append(badge, review, download, deleteOutput);
     section.append(player, actions);
     const editor = buildMontageEditor(owner, projects, montage, player, review);
     section.append(editor);
@@ -282,6 +309,11 @@ function buildMontageEditor(owner, projects, montage, finalPlayer, reviewButton)
       <label><span>CAPTION POSITION</span><select class="automix-caption-position"><option value="bottom">Bottom</option><option value="middle">Middle</option><option value="top">Top</option></select></label>
       <label><span>TEXT WATERMARK</span><input class="automix-watermark-text" maxlength="80" placeholder="@yourhandle or Brand Name" /></label>
       <label><span>WATERMARK POSITION</span><select class="automix-watermark-position"><option value="top-right">Top right</option><option value="top-left">Top left</option><option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option></select></label>
+    </div>
+    <div class="brand-policy" data-brand-policy>
+      <span class="brand-policy-mark">KP</span>
+      <span><strong data-brand-policy-title>Free/Demo export · KlipPharma watermark locked</strong><small data-brand-policy-copy>Your typed watermark appears too. Subscribe to a paid tier to remove the KlipPharma mark.</small></span>
+      <b class="brand-policy-badge" data-brand-policy-badge>LOCKED</b>
     </div>
     <section class="automix-audio-mixer">
       <div class="automix-audio-head"><div><small>AUDIO MIXER</small><strong>Mix the original sound with music or effects</strong></div><span>LOCAL AUDIO · NO AI CHARGE</span></div>
@@ -309,6 +341,7 @@ function buildMontageEditor(owner, projects, montage, finalPlayer, reviewButton)
     <div class="automix-sequence"></div>
     <div class="automix-editor-footer"><button type="button" class="automix-reset">Reset changes</button><span class="automix-editor-note">Your current MP4 stays available until the rebuild finishes.</span><button type="button" class="automix-rebuild">Rebuild & preview final Auto-Mix</button></div>
   `;
+  paintBrandPolicy(editor);
 
   const original = (montage.segments || []).map((segment) => ({ ...segment }));
   let moments = original.map((segment) => ({ ...segment }));
@@ -488,6 +521,19 @@ function buildMontageEditor(owner, projects, montage, finalPlayer, reviewButton)
       caption.value = moment.captionText || "";
       captionLabel.append(caption);
 
+      const framingLabel = document.createElement("label");
+      framingLabel.className = "automix-moment-framing";
+      framingLabel.innerHTML = "<span>9:16 SUBJECT</span>";
+      const focusInput = document.createElement("input");
+      focusInput.type = "range";
+      focusInput.min = "0";
+      focusInput.max = "100";
+      focusInput.step = "1";
+      focusInput.value = String(Number.isFinite(Number(moment.focusX)) ? Number(moment.focusX) : 50);
+      const focusOutput = document.createElement("output");
+      focusOutput.textContent = `${Math.round(Number(focusInput.value))}%`;
+      framingLabel.append(focusInput, focusOutput);
+
       const tools = document.createElement("div");
       tools.className = "automix-moment-tools";
       const preview = document.createElement("button");
@@ -522,6 +568,13 @@ function buildMontageEditor(owner, projects, montage, finalPlayer, reviewButton)
         updateTotal();
       });
       caption.addEventListener("input", () => { moment.captionText = caption.value; });
+      focusInput.addEventListener("input", () => {
+        moment.focusX = Number(focusInput.value);
+        focusOutput.textContent = `${Math.round(moment.focusX)}%`;
+        if (sourcePreviewName.textContent === (moment.sourceName || source?.originalName || "Source moment")) {
+          sourcePreview.style.objectPosition = `${moment.focusX}% center`;
+        }
+      });
       preview.addEventListener("click", async () => {
         const url = source?.previewUrl || source?.sourceUrl;
         if (!url) return toast("This source preview is unavailable.");
@@ -534,6 +587,7 @@ function buildMontageEditor(owner, projects, montage, finalPlayer, reviewButton)
         }
         sourcePreviewName.textContent = moment.sourceName || source?.originalName || "Source moment";
         sourcePreviewTime.textContent = `${preciseClock(moment.start)}–${preciseClock(moment.end)}`;
+        sourcePreview.style.objectPosition = `${Number(moment.focusX ?? 50)}% center`;
         sourcePreview.currentTime = Number(moment.start);
         previewEnd = Number(moment.end);
         try { await sourcePreview.play(); } catch { toast("Press play in the source preview."); }
@@ -553,7 +607,7 @@ function buildMontageEditor(owner, projects, montage, finalPlayer, reviewButton)
         paint();
       });
 
-      row.append(identity, timing, captionLabel, tools);
+      row.append(identity, timing, framingLabel, captionLabel, tools);
       sequence.append(row);
     });
   };
@@ -604,7 +658,7 @@ function buildMontageEditor(owner, projects, montage, finalPlayer, reviewButton)
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        segments: moments.map(({ sourceId, start, end, captionText }) => ({ sourceId, start, end, captionText })),
+        segments: moments.map(({ sourceId, start, end, captionText, focusX }) => ({ sourceId, start, end, captionText, focusX })),
         captionsEnabled: captionsEnabled.checked,
         captionStyle: captionStyle.value,
         captionPosition: captionPosition.value,
@@ -646,6 +700,7 @@ function paintAutoMixControls() {
 function renderProjectClips(project, grid) {
   project.clips.forEach((clip) => {
     const node = $("#clipTemplate").content.cloneNode(true);
+    paintBrandPolicy(node);
     const card = node.querySelector(".clip-card");
     card.dataset.clipId = clip.id;
     card.dataset.projectId = project.id;
@@ -685,10 +740,12 @@ function renderProjectClips(project, grid) {
     installTrimmer(project, clip, card);
     const renderButton = node.querySelector(".render");
     const download = node.querySelector(".download");
+    const deleteExport = node.querySelector(".delete-export");
     if (clip.renderStatus === "ready" && clip.downloadUrl) {
       renderButton.classList.add("hidden");
       download.href = clip.downloadUrl;
       download.classList.remove("hidden");
+      deleteExport.classList.remove("hidden");
     }
     renderButton.addEventListener("click", async (event) => {
       try {
@@ -698,6 +755,7 @@ function renderProjectClips(project, grid) {
         toast(error.message || "Could not save this cut.");
       }
     });
+    deleteExport.addEventListener("click", () => deleteClipExport(project, clip, card, deleteExport));
     node.querySelectorAll(".feedback button").forEach((button) => button.addEventListener("click", () => rate(project.id, clip.id, button)));
     grid.append(node);
   });
@@ -838,13 +896,115 @@ async function loadRecentProjects() {
       button.textContent = ready.length ? "Open results" : "Unavailable";
       button.disabled = !ready.length;
       if (ready.length) button.addEventListener("click", () => openSavedBatch(ready.map((project) => project.id), button));
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.className = "recent-delete";
+      deleteButton.textContent = "Delete";
+      deleteButton.addEventListener("click", () => deleteSavedBatch(batch, deleteButton));
+      const actions = document.createElement("div");
+      actions.className = "recent-actions";
+      actions.append(button, deleteButton);
       copy.append(title, details);
-      card.append(copy, button);
+      card.append(copy, actions);
       grid.append(card);
     });
   } catch {
     section.classList.add("hidden");
   }
+}
+
+async function deleteSavedBatch(batch, button) {
+  const names = batch.map((project) => project.originalName);
+  const label = names.length === 1 ? names[0] : `this batch of ${names.length} videos`;
+  if (!confirm(`Permanently delete ${label} and every rendered klip? This cannot be undone.`)) return;
+  button.disabled = true;
+  button.textContent = "Deleting…";
+  const batchId = batch[0]?.batchId || batch[0]?.id;
+  const response = await fetch(`/api/batches/${encodeURIComponent(batchId)}`, { method: "DELETE" });
+  const data = await response.json();
+  if (!response.ok) {
+    button.disabled = false;
+    button.textContent = "Delete";
+    return toast(data.error || "Could not delete that batch.");
+  }
+  toast("Batch and stored videos deleted.");
+  loadRecentProjects();
+}
+
+async function deleteSourceProject(project, button) {
+  const warning = Number(project.batchSize || 1) > 1
+    ? `Permanently delete ${project.originalName}? Its rendered klips and the batch Auto-Mix will also be deleted.`
+    : `Permanently delete ${project.originalName} and every rendered klip?`;
+  if (!confirm(`${warning} This cannot be undone.`)) return;
+  button.disabled = true;
+  button.textContent = "Deleting…";
+  const response = await fetch(`/api/projects/${project.id}`, { method: "DELETE" });
+  const data = await response.json();
+  if (!response.ok) {
+    button.disabled = false;
+    button.textContent = "Delete video";
+    return toast(data.error || "Could not delete that video.");
+  }
+  currentProjects = currentProjects.filter((id) => id !== project.id);
+  toast(`${project.originalName} deleted.`);
+  await refreshCurrentResults();
+}
+
+async function deleteClipExport(project, clip, card, button) {
+  if (!confirm(`Delete the rendered MP4 for “${clip.title}”? You can render it again later.`)) return;
+  button.disabled = true;
+  button.textContent = "Deleting…";
+  const response = await fetch(`/api/projects/${project.id}/clips/${clip.id}/export`, { method: "DELETE" });
+  const data = await response.json();
+  button.disabled = false;
+  button.textContent = "Delete rendered MP4";
+  if (!response.ok) return toast(data.error || "Could not delete that MP4.");
+  clip.renderStatus = "idle";
+  delete clip.downloadUrl;
+  card.querySelector(".download").classList.add("hidden");
+  button.classList.add("hidden");
+  const render = card.querySelector(".render");
+  render.classList.remove("hidden");
+  render.disabled = false;
+  render.textContent = "Create vertical clip";
+  toast("Rendered MP4 deleted.");
+}
+
+async function deleteMontageExport(owner, button) {
+  if (!confirm("Delete this Auto-Mix MP4? This cannot be undone.")) return;
+  button.disabled = true;
+  button.textContent = "Deleting…";
+  const response = await fetch(`/api/projects/${owner.id}/montage/export`, { method: "DELETE" });
+  const data = await response.json();
+  if (!response.ok) {
+    button.disabled = false;
+    button.textContent = "Delete Auto-Mix MP4";
+    return toast(data.error || "Could not delete that Auto-Mix.");
+  }
+  toast("Auto-Mix MP4 deleted.");
+  await refreshCurrentResults();
+}
+
+async function refreshCurrentResults() {
+  if (!currentProjects.length) {
+    setView("upload");
+    loadRecentProjects();
+    return;
+  }
+  const projects = await Promise.all(currentProjects.map((id) => fetch(`/api/projects/${id}`).then(async (response) => {
+    if (response.status === 404) return null;
+    const project = await response.json();
+    if (!response.ok) throw new Error(project.error || "Could not refresh this project.");
+    return project;
+  })));
+  const available = projects.filter(Boolean);
+  currentProjects = available.map((project) => project.id);
+  if (!available.length) {
+    setView("upload");
+    loadRecentProjects();
+    return;
+  }
+  renderResults(available);
 }
 
 async function openSavedBatch(ids, button) {
@@ -888,6 +1048,9 @@ function installTrimmer(project, clip, card) {
   const captionPosition = card.querySelector(".caption-position");
   const watermarkText = card.querySelector(".watermark-text");
   const watermarkPosition = card.querySelector(".watermark-position");
+  const focusInput = card.querySelector(".focus-x");
+  const focusLabel = card.querySelector(".focus-label");
+  const focusPresets = [...card.querySelectorAll(".focus-presets button")];
   const overlaySaveState = card.querySelector(".overlay-save-state");
   const original = { start: Number(clip.start), end: Number(clip.end) };
   const transcriptForSelection = (start, end) => (project.segments || [])
@@ -905,6 +1068,7 @@ function installTrimmer(project, clip, card) {
     captionPosition: clip.captionPosition || "bottom",
     watermarkText: clip.watermarkText ?? project.watermarkText ?? "",
     watermarkPosition: clip.watermarkPosition || project.watermarkPosition || "top-right",
+    focusX: Number.isFinite(Number(clip.focusX)) ? Number(clip.focusX) : 50,
   };
   const mediaDuration = Math.max(Number(project.duration) || state.end, state.end);
   const signature = () => JSON.stringify(state);
@@ -921,6 +1085,7 @@ function installTrimmer(project, clip, card) {
   captionPosition.value = state.captionPosition;
   watermarkText.value = state.watermarkText;
   watermarkPosition.value = state.watermarkPosition;
+  focusInput.value = String(state.focusX);
 
   function showPreviewMessage(message, detail, canRetry = true) {
     previewReady = false;
@@ -936,6 +1101,7 @@ function installTrimmer(project, clip, card) {
   function activatePreview(url) {
     previewReady = true;
     video.src = url;
+    video.style.objectPosition = `${state.focusX}% center`;
     video.classList.remove("hidden");
     placeholder.classList.add("hidden");
     previewButton.disabled = false;
@@ -987,6 +1153,10 @@ function installTrimmer(project, clip, card) {
     endTime.textContent = preciseClock(state.end);
     selectionLength.textContent = `${preciseClock(state.end - state.start)} selected`;
     durationBadge.textContent = `${clock(state.start)}–${clock(state.end)}`;
+    video.style.objectPosition = `${state.focusX}% center`;
+    focusInput.value = String(state.focusX);
+    focusLabel.textContent = state.focusX < 35 ? "Left" : state.focusX > 65 ? "Right" : "Center";
+    focusPresets.forEach((button) => button.classList.toggle("active", Number(button.dataset.focus) === Number(state.focusX)));
     if (previewReady && Number.isFinite(seekTo)) {
       previewingSelection = false;
       video.pause();
@@ -1026,6 +1196,7 @@ function installTrimmer(project, clip, card) {
       captionPosition: state.captionPosition,
       watermarkText: state.watermarkText,
       watermarkPosition: state.watermarkPosition,
+      focusX: state.focusX,
     });
     lastSaved = signature();
     overlaySaveState.textContent = "Saved";
@@ -1098,6 +1269,18 @@ function installTrimmer(project, clip, card) {
     markCutChanged();
     queueSave();
   });
+  focusInput.addEventListener("input", () => {
+    state.focusX = Number(focusInput.value);
+    markCutChanged();
+    paint();
+    queueSave();
+  });
+  focusPresets.forEach((button) => button.addEventListener("click", () => {
+    state.focusX = Number(button.dataset.focus);
+    markCutChanged();
+    paint();
+    queueSave();
+  }));
 
   previewButton.addEventListener("click", async () => {
     if (!previewReady) return;
@@ -1160,6 +1343,7 @@ async function renderVideo(projectId, clipId, button, card) {
       const link = card.querySelector(".download");
       link.href = clip.downloadUrl;
       link.classList.remove("hidden");
+      card.querySelector(".delete-export").classList.remove("hidden");
       toast("Vertical clip is ready.");
     } else if (clip.renderStatus === "failed") {
       button.disabled = false; button.textContent = "Try again"; toast(clip.renderError || "Render failed.");
@@ -1175,6 +1359,23 @@ async function rate(projectId, clipId, button) {
 }
 
 $("#newProject").addEventListener("click", () => { clearTimeout(pollTimer); currentProjects = []; form.reset(); paintAutoMixControls(); clearSelectedFiles(); $("#batchStatus").innerHTML = ""; setView("upload"); loadRecentProjects(); });
+deleteBatchButton.addEventListener("click", async () => {
+  if (!currentProjects.length) return;
+  const projects = await Promise.all(currentProjects.map((id) => fetch(`/api/projects/${id}`).then((response) => response.json())));
+  const batchId = projects[0]?.batchId || projects[0]?.id;
+  if (!batchId || !confirm(`Permanently delete this batch of ${projects.length} ${projects.length === 1 ? "video" : "videos"} and every rendered file? This cannot be undone.`)) return;
+  deleteBatchButton.disabled = true;
+  deleteBatchButton.textContent = "Deleting…";
+  const response = await fetch(`/api/batches/${encodeURIComponent(batchId)}`, { method: "DELETE" });
+  const data = await response.json();
+  deleteBatchButton.disabled = false;
+  deleteBatchButton.textContent = "Delete batch";
+  if (!response.ok) return toast(data.error || "Could not delete this batch.");
+  currentProjects = [];
+  setView("upload");
+  loadRecentProjects();
+  toast("Batch and every stored video deleted.");
+});
 function setView(view) { uploadView.classList.toggle("hidden", view !== "upload"); processingView.classList.toggle("hidden", view !== "processing"); resultsView.classList.toggle("hidden", view !== "results"); }
 function clock(seconds) { const m=Math.floor(seconds/60); return `${m}:${String(Math.floor(seconds%60)).padStart(2,"0")}`; }
 function preciseClock(seconds) { const m=Math.floor(seconds/60); return `${m}:${String((seconds%60).toFixed(1)).padStart(4,"0")}`; }
@@ -1244,8 +1445,10 @@ async function bootstrapApplication() {
 }
 
 function showApplication(user) {
+  currentUser = user || null;
   authView.classList.add("hidden");
   appShell.classList.remove("hidden");
+  paintBrandPolicy(document);
   if (user?.local) {
     accountMenu.classList.add("hidden");
   } else {
@@ -1255,6 +1458,7 @@ function showApplication(user) {
 }
 
 function showAuthentication() {
+  currentUser = null;
   appShell.classList.add("hidden");
   accountMenu.classList.add("hidden");
   authView.classList.remove("hidden");

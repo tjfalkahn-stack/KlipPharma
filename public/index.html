@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=0.14.0" />
+  <link rel="stylesheet" href="/styles.css?v=0.18.0" />
 </head>
 <body>
   <header class="topbar">
@@ -101,6 +101,11 @@
             <label><span>DEFAULT TEXT WATERMARK <small>OPTIONAL</small></span><input name="watermarkText" maxlength="80" placeholder="e.g. @yourhandle or Brand Name" /></label>
             <label><span>WATERMARK POSITION</span><select name="watermarkPosition"><option value="top-right">Top right</option><option value="top-left">Top left</option><option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option></select></label>
           </div>
+          <div class="brand-policy" data-brand-policy>
+            <span class="brand-policy-mark">KP</span>
+            <span><strong data-brand-policy-title>Free/Demo export · KlipPharma watermark locked</strong><small data-brand-policy-copy>Your typed watermark appears too. Subscribe to a paid tier to remove the KlipPharma mark.</small></span>
+            <b class="brand-policy-badge" data-brand-policy-badge>LOCKED</b>
+          </div>
         </section>
         <section class="automix-builder" id="autoMixBuilder">
           <label class="automix-toggle">
@@ -143,7 +148,7 @@
     <section class="results hidden" id="resultsView">
       <div class="results-head">
         <div><p class="kicker">YOUR KLIPS</p><h2 id="resultTitle">Strong moments found</h2></div>
-        <button class="secondary" id="newProject">+ New project</button>
+        <div class="results-controls"><button class="danger-secondary" id="deleteBatch" type="button">Delete batch</button><button class="secondary" id="newProject">+ New project</button></div>
       </div>
       <div id="montageOutput"></div>
       <div class="batch-results" id="clipGrid"></div>
@@ -154,7 +159,7 @@
     <section class="project-result">
       <div class="source-head">
         <div><span class="source-number"></span><h3 class="source-name"></h3></div>
-        <span class="source-count"></span>
+        <div class="source-actions"><span class="source-count"></span><button class="delete-source" type="button">Delete video</button></div>
       </div>
       <div class="project-clip-grid"></div>
     </section>
@@ -197,6 +202,19 @@
               <button class="reset-cut" type="button">Reset to AI cut</button>
             </div>
             <p class="trim-note">Drag either handle. Changes save automatically and are used when you create the vertical klip.</p>
+            <div class="framing-control">
+              <div class="framing-heading">
+                <span><small>9:16 SUBJECT FRAMING</small><strong>Center the speaker</strong></span>
+                <output class="focus-label">Center</output>
+              </div>
+              <input class="focus-x" type="range" min="0" max="100" step="1" value="50" aria-label="Horizontal subject position" />
+              <div class="focus-presets">
+                <button type="button" data-focus="20">Left</button>
+                <button type="button" data-focus="50">Center</button>
+                <button type="button" data-focus="80">Right</button>
+              </div>
+              <p>Move the frame until the speaker is centered. The preview and final export use this exact position.</p>
+            </div>
           </div>
         </div>
         <section class="overlay-editor">
@@ -216,11 +234,17 @@
             <label><span>POSITION</span><select class="watermark-position"><option value="top-right">Top right</option><option value="top-left">Top left</option><option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option></select></label>
             <span class="overlay-save-state">Changes save automatically</span>
           </div>
+          <div class="brand-policy" data-brand-policy>
+            <span class="brand-policy-mark">KP</span>
+            <span><strong data-brand-policy-title>Free/Demo export · KlipPharma watermark locked</strong><small data-brand-policy-copy>Your typed watermark appears too. Subscribe to a paid tier to remove the KlipPharma mark.</small></span>
+            <b class="brand-policy-badge" data-brand-policy-badge>LOCKED</b>
+          </div>
         </section>
         <div class="score-bars"></div>
         <div class="actions">
           <button class="render">Create vertical clip</button>
           <a class="download hidden" download>Download MP4</a>
+          <button class="delete-export hidden" type="button">Delete rendered MP4</button>
           <div class="feedback" aria-label="Rate this recommendation">
             <button data-rating="good" title="Good">✓</button><button data-rating="almost" title="Almost">~</button><button data-rating="bad" title="Bad">×</button><button data-rating="wrong-topic" title="Wrong topic">↯</button>
           </div>
@@ -230,6 +254,6 @@
   </template>
 
   <div class="toast hidden" id="toast"></div>
-  <script src="/app.js?v=0.14.0" type="module"></script>
+  <script src="/app.js?v=0.18.0" type="module"></script>
 </body>
 </html>

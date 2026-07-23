@@ -1,0 +1,24 @@
+services:
+  klippharma:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    environment:
+      NODE_ENV: production
+      PORT: 3100
+      AUTH_MODE: required
+      DATABASE_URL: ${DATABASE_URL}
+      PGSSLMODE: require
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      AI_TEXT_MODEL: ${AI_TEXT_MODEL:-gpt-4o-mini}
+      AI_TRANSCRIPTION_MODEL: ${AI_TRANSCRIPTION_MODEL:-whisper-1}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
+      R2_BUCKET: ${R2_BUCKET}
+    volumes:
+      - klippharma_working_storage:/app/storage
+
+volumes:
+  klippharma_working_storage:

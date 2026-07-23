@@ -1,0 +1,21 @@
+{
+  "name": "klippharma",
+  "version": "0.14.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file=.env.local --watch server.js",
+    "start": "node server.js",
+    "check": "node --check server.js && node --check public/app.js && node --check lib/database.js && node --check lib/object-storage.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1092.0",
+    "@aws-sdk/s3-request-presigner": "^3.1092.0",
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "ffmpeg-static": "^5.3.0",
+    "multer": "^2.0.2",
+    "openai": "^5.10.2",
+    "pg": "^8.22.0"
+  }
+}

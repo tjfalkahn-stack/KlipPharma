@@ -1,0 +1,9 @@
+node_modules/
+.env*
+!.env.example
+storage/uploads/*
+storage/exports/*
+storage/projects/*
+!storage/uploads/.gitkeep
+!storage/exports/.gitkeep
+!storage/projects/.gitkeep

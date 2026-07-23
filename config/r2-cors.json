@@ -1,0 +1,12 @@
+[
+  {
+    "AllowedOrigins": [
+      "https://YOUR-KLIPPHARMA-DOMAIN.com",
+      "http://localhost:3100"
+    ],
+    "AllowedMethods": ["PUT", "GET", "HEAD"],
+    "AllowedHeaders": ["Content-Type"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]

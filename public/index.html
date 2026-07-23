@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#101510" />
+  <title>KlipPharma — We pick the dopest klips</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css?v=0.14.0" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/"><span class="brand-mark">KP</span><span>KlipPharma</span></a>
+    <div class="topbar-actions">
+      <span class="beta">PRIVATE HARVEST · BETA</span>
+      <div class="account-menu hidden" id="accountMenu"><span id="accountEmail"></span><button type="button" id="logoutButton">Sign out</button></div>
+    </div>
+  </header>
+
+  <section class="auth-view hidden" id="authView">
+    <div class="auth-card">
+      <span class="auth-kicker">PRIVATE CREATOR WORKSPACE</span>
+      <h1>Welcome to<br><em>KlipPharma.</em></h1>
+      <p id="authIntro">Sign in to your private video studio. Your projects stay separated from every other creator.</p>
+      <form id="authForm">
+        <label><span>EMAIL</span><input id="authEmail" name="email" type="email" autocomplete="email" required placeholder="you@studio.com" /></label>
+        <label><span>PASSWORD</span><input id="authPassword" name="password" type="password" autocomplete="current-password" minlength="10" required placeholder="At least 10 characters" /></label>
+        <button class="primary" type="submit" id="authSubmit"><span>Sign in</span><b>→</b></button>
+      </form>
+      <button class="auth-switch" type="button" id="authSwitch">New to KlipPharma? Create an account</button>
+      <p class="auth-error hidden" id="authError"></p>
+    </div>
+  </section>
+
+  <main id="appShell" class="hidden">
+    <section class="hero">
+      <div class="eyebrow"><span></span> AI-powered editorial judgment</div>
+      <h1>Your long videos.<br><em>The dopest klips.</em></h1>
+      <p>Upload one video or a full batch. Turn podcasts, interviews, and campaigns into ranked, captioned vertical clips—chosen for your audience, not generic virality.</p>
+    </section>
+
+    <section class="workspace" id="uploadView">
+      <form id="uploadForm">
+        <section class="creator-step">
+          <div class="step-heading">
+            <div><span>STEP 1 · CREATOR WORKFLOW</span><h2>What are you klipping?</h2></div>
+            <p>KlipPharma changes its editorial judgment for your format.</p>
+          </div>
+          <div class="creator-grid">
+            <label class="creator-option">
+              <input type="radio" name="contentType" value="auto" checked />
+              <span class="creator-card"><b class="creator-icon">✦</b><strong>Smart Detect</strong><small>Mixed or general content</small><em>Balanced AI · Multi-angle</em></span>
+            </label>
+            <label class="creator-option">
+              <input type="radio" name="contentType" value="artist" />
+              <span class="creator-card"><b class="creator-icon">♪</b><strong>Artist / Music</strong><small>Songs, performances, sessions</small><em>Lyric-safe · HQ audio</em></span>
+            </label>
+            <label class="creator-option">
+              <input type="radio" name="contentType" value="podcast" />
+              <span class="creator-card"><b class="creator-icon">◉</b><strong>Podcast / Interview</strong><small>Conversations and reactions</small><em>Q&amp;A context · Stories</em></span>
+            </label>
+            <label class="creator-option">
+              <input type="radio" name="contentType" value="monologue" />
+              <span class="creator-card"><b class="creator-icon">▮</b><strong>Monologue</strong><small>Talking head and direct-to-camera</small><em>Cold opens · Hot takes</em></span>
+            </label>
+          </div>
+        </section>
+        <div class="step-heading upload-heading">
+          <div><span>STEP 2 · SOURCE VIDEOS</span><h2>Load your footage</h2></div>
+          <p>Add one video or build a batch of up to 10.</p>
+        </div>
+        <label class="dropzone" id="dropzone">
+          <input id="video" name="videos" type="file" accept="video/*,audio/*" multiple required />
+          <span class="upload-icon">↑</span>
+          <strong id="fileLabel">Drop your long-form videos here</strong>
+          <small>Choose up to 10 files · click or drop again to keep adding</small>
+        </label>
+        <div class="file-selection hidden" id="fileSelection"></div>
+        <p class="mode-help">For each video, choose <strong>AI + captions</strong> or <strong>Manual · no transcript</strong>. Manual mode skips transcription charges and opens the cutter directly.</p>
+        <div class="settings-grid">
+          <label><span>Target audience</span><input name="audience" placeholder="e.g. Streetwear founders" /></label>
+          <label><span>Content goal</span><select name="goal"><option>High-retention social clips</option><option>Educational insights</option><option>Emotional storytelling</option><option>Controversial conversation</option><option>Product promotion</option></select></label>
+          <label><span>Primary platform</span><select name="platform"><option>Instagram Reels</option><option>TikTok</option><option>YouTube Shorts</option><option>LinkedIn</option><option>X</option></select></label>
+        </div>
+        <section class="batch-recipe">
+          <div class="step-heading recipe-heading">
+            <div><span>STEP 3 · INDIVIDUAL AI KLIPS</span><h2>Choose each klip’s starting length</h2></div>
+            <p>Opus-style recommendations from every source. Every cut remains editable up to 1:30.</p>
+          </div>
+          <div class="length-grid" aria-label="AI starting clip length">
+            <label class="length-option"><input type="radio" name="clipLength" value="smart" checked /><span><strong>Smart</strong><small>AI decides</small></span></label>
+            <label class="length-option"><input type="radio" name="clipLength" value="15" /><span><strong>:15</strong><small>Quick hook</small></span></label>
+            <label class="length-option"><input type="radio" name="clipLength" value="30" /><span><strong>:30</strong><small>Social cut</small></span></label>
+            <label class="length-option"><input type="radio" name="clipLength" value="45" /><span><strong>:45</strong><small>Story cut</small></span></label>
+            <label class="length-option"><input type="radio" name="clipLength" value="60" /><span><strong>1:00</strong><small>Deep cut</small></span></label>
+            <label class="length-option"><input type="radio" name="clipLength" value="90" /><span><strong>1:30</strong><small>Full moment</small></span></label>
+          </div>
+          <div class="batch-brand-grid">
+            <label><span>DEFAULT TEXT WATERMARK <small>OPTIONAL</small></span><input name="watermarkText" maxlength="80" placeholder="e.g. @yourhandle or Brand Name" /></label>
+            <label><span>WATERMARK POSITION</span><select name="watermarkPosition"><option value="top-right">Top right</option><option value="top-left">Top left</option><option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option></select></label>
+          </div>
+        </section>
+        <section class="automix-builder" id="autoMixBuilder">
+          <label class="automix-toggle">
+            <input type="checkbox" name="createMontage" value="true" id="createMontage" />
+            <span class="toggle-track"><i></i></span>
+            <span class="automix-copy"><small>STEP 4 · CAPCUT-STYLE BATCH EDIT</small><strong>Create one Auto-Mix from all videos</strong><em>KlipPharma will select, cut, sequence, and combine moments from the entire batch into one vertical video.</em></span>
+            <b class="automix-badge">ADD OUTPUT</b>
+          </label>
+          <div class="automix-controls">
+            <div class="automix-control">
+              <span>AUTO-MIX TOTAL LENGTH</span>
+              <div class="length-grid automix-length-grid">
+                <label class="length-option"><input type="radio" name="montageLength" value="15" /><span><strong>:15</strong><small>Teaser</small></span></label>
+                <label class="length-option"><input type="radio" name="montageLength" value="30" checked /><span><strong>:30</strong><small>Social</small></span></label>
+                <label class="length-option"><input type="radio" name="montageLength" value="45" /><span><strong>:45</strong><small>Story</small></span></label>
+                <label class="length-option"><input type="radio" name="montageLength" value="60" /><span><strong>1:00</strong><small>Feature</small></span></label>
+                <label class="length-option"><input type="radio" name="montageLength" value="90" /><span><strong>1:30</strong><small>Full</small></span></label>
+              </div>
+            </div>
+            <label class="automix-style"><span>EDITING STYLE</span><select name="montageStyle"><option value="fast">Fast &amp; Punchy</option><option value="story">Smooth Story</option><option value="music">Music Energy</option><option value="promo">Clean Promo</option></select></label>
+          </div>
+        </section>
+        <button class="primary" type="submit"><span>Find my dopest klips</span><b>→</b></button>
+      </form>
+      <section class="recent-projects hidden" id="recentProjects">
+        <div class="recent-head"><div><span>RECENT HARVESTS</span><h2>Continue where you left off</h2></div><small>Saved on this installation</small></div>
+        <div class="recent-grid" id="recentGrid"></div>
+      </section>
+    </section>
+
+    <section class="processing hidden" id="processingView">
+      <div class="spinner"><span></span></div>
+      <p class="kicker">KLIPPHARMA IS WORKING</p>
+      <h2 id="stage">Preparing your clips</h2>
+      <div class="progress"><i id="progressBar"></i></div>
+      <p id="progressText">0%</p>
+      <div class="batch-status" id="batchStatus"></div>
+    </section>
+
+    <section class="results hidden" id="resultsView">
+      <div class="results-head">
+        <div><p class="kicker">YOUR KLIPS</p><h2 id="resultTitle">Strong moments found</h2></div>
+        <button class="secondary" id="newProject">+ New project</button>
+      </div>
+      <div id="montageOutput"></div>
+      <div class="batch-results" id="clipGrid"></div>
+    </section>
+  </main>
+
+  <template id="projectTemplate">
+    <section class="project-result">
+      <div class="source-head">
+        <div><span class="source-number"></span><h3 class="source-name"></h3></div>
+        <span class="source-count"></span>
+      </div>
+      <div class="project-clip-grid"></div>
+    </section>
+  </template>
+
+  <template id="clipTemplate">
+    <article class="clip-card">
+      <div class="rank"></div>
+      <div class="score-ring"><strong></strong><small>SCORE</small></div>
+      <div class="clip-copy">
+        <div class="meta"><span class="duration"></span><span class="platform"></span><span class="creator-mode"></span><span class="clip-length"></span></div>
+        <h3></h3>
+        <blockquote></blockquote>
+        <p class="why"></p>
+        <div class="clip-editor">
+          <div class="preview-shell">
+            <video class="preview-video" controls preload="metadata" playsinline></video>
+            <div class="preview-placeholder hidden">
+              <strong class="preview-message">Preparing a browser-safe preview…</strong>
+              <span class="preview-detail">Your source video is still saved.</span>
+              <button class="retry-preview" type="button">Retry preview</button>
+            </div>
+            <button class="preview-cut" type="button"><span>▶</span> Preview selected cut</button>
+          </div>
+          <div class="trim-panel">
+            <div class="trim-heading">
+              <div><small>FINE-TUNE THE AI CUT</small><strong>Set your start &amp; end</strong></div>
+              <span class="max-badge">MAX 1:30</span>
+            </div>
+            <label class="trim-control">
+              <span>START <output class="start-time">0:00.0</output></span>
+              <input class="trim-start" type="range" min="0" step="0.1" />
+            </label>
+            <label class="trim-control">
+              <span>END <output class="end-time">0:00.0</output></span>
+              <input class="trim-end" type="range" min="0" step="0.1" />
+            </label>
+            <div class="trim-footer">
+              <span class="selection-length">0:00 selected</span>
+              <button class="reset-cut" type="button">Reset to AI cut</button>
+            </div>
+            <p class="trim-note">Drag either handle. Changes save automatically and are used when you create the vertical klip.</p>
+          </div>
+        </div>
+        <section class="overlay-editor">
+          <div class="overlay-heading">
+            <div><small>WORDS &amp; WATERMARK</small><strong>Control what appears on the klip</strong></div>
+            <label class="caption-toggle"><input class="captions-enabled" type="checkbox" /><span></span><b>Captions</b></label>
+          </div>
+          <div class="caption-edit-grid">
+            <label class="caption-copy-field"><span>EDIT CAPTION WORDS</span><textarea class="caption-text" rows="4" maxlength="5000" placeholder="Type the exact words you want burned into this klip."></textarea></label>
+            <div class="caption-settings">
+              <label><span>CAPTION STYLE</span><select class="caption-style"><option value="bold">Bold Social</option><option value="clean">Clean</option><option value="karaoke">KlipPharma Green</option><option value="minimal">Minimal</option></select></label>
+              <label><span>CAPTION POSITION</span><select class="caption-position"><option value="bottom">Bottom</option><option value="middle">Middle</option><option value="top">Top</option></select></label>
+            </div>
+          </div>
+          <div class="watermark-grid">
+            <label><span>TEXT WATERMARK <small>OPTIONAL</small></span><input class="watermark-text" maxlength="80" placeholder="@yourhandle or Brand Name" /></label>
+            <label><span>POSITION</span><select class="watermark-position"><option value="top-right">Top right</option><option value="top-left">Top left</option><option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option></select></label>
+            <span class="overlay-save-state">Changes save automatically</span>
+          </div>
+        </section>
+        <div class="score-bars"></div>
+        <div class="actions">
+          <button class="render">Create vertical clip</button>
+          <a class="download hidden" download>Download MP4</a>
+          <div class="feedback" aria-label="Rate this recommendation">
+            <button data-rating="good" title="Good">✓</button><button data-rating="almost" title="Almost">~</button><button data-rating="bad" title="Bad">×</button><button data-rating="wrong-topic" title="Wrong topic">↯</button>
+          </div>
+        </div>
+      </div>
+    </article>
+  </template>
+
+  <div class="toast hidden" id="toast"></div>
+  <script src="/app.js?v=0.14.0" type="module"></script>
+</body>
+</html>

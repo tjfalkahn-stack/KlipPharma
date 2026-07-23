@@ -1,0 +1,329 @@
+0 verbose cli /usr/local/bin/node /usr/local/bin/npm
+1 info using npm@11.16.0
+2 info using node@v24.18.0
+3 silly config load:file:/usr/local/lib/node_modules/npm/npmrc
+4 silly config load:file:/Users/thegoat/Documents/Friendly Partners AI/KlipPharma/.npmrc
+5 silly config load:file:/Users/thegoat/.npmrc
+6 silly config load:file:/usr/local/etc/npmrc
+7 verbose title npm install
+8 verbose argv "install" "--cache" ".npm-cache"
+9 verbose logfile logs-max:10 dir:/Users/thegoat/Documents/Friendly Partners AI/KlipPharma/.npm-cache/_logs/2026-07-22T18_17_36_938Z-
+10 verbose logfile /Users/thegoat/Documents/Friendly Partners AI/KlipPharma/.npm-cache/_logs/2026-07-22T18_17_36_938Z-debug-0.log
+11 silly logfile done cleaning log files
+12 silly packumentCache heap:4496293888 maxSize:1124073472 maxEntrySize:562036736
+13 verbose shrinkwrap failed to load node_modules/.package-lock.json out of date, updated: node_modules
+14 silly idealTree buildDeps
+15 silly reify moves {}
+16 silly audit bulk request {
+16 silly audit   '@aws-sdk/checksums': [ '3.1000.19' ],
+16 silly audit   '@aws-sdk/client-s3': [ '3.1092.0' ],
+16 silly audit   '@aws-sdk/core': [ '3.976.0' ],
+16 silly audit   '@aws-sdk/credential-provider-env': [ '3.972.60' ],
+16 silly audit   '@aws-sdk/credential-provider-http': [ '3.972.62' ],
+16 silly audit   '@aws-sdk/credential-provider-ini': [ '3.973.5' ],
+16 silly audit   '@aws-sdk/credential-provider-login': [ '3.972.67' ],
+16 silly audit   '@aws-sdk/credential-provider-node': [ '3.972.71' ],
+16 silly audit   '@aws-sdk/credential-provider-process': [ '3.972.60' ],
+16 silly audit   '@aws-sdk/credential-provider-sso': [ '3.973.4' ],
+16 silly audit   '@aws-sdk/credential-provider-web-identity': [ '3.972.66' ],
+16 silly audit   '@aws-sdk/middleware-sdk-s3': [ '3.972.65' ],
+16 silly audit   '@aws-sdk/nested-clients': [ '3.997.34' ],
+16 silly audit   '@aws-sdk/s3-request-presigner': [ '3.1092.0' ],
+16 silly audit   '@aws-sdk/signature-v4-multi-region': [ '3.996.41' ],
+16 silly audit   '@aws-sdk/token-providers': [ '3.1092.0' ],
+16 silly audit   '@aws-sdk/types': [ '3.974.2' ],
+16 silly audit   '@aws-sdk/xml-builder': [ '3.972.36' ],
+16 silly audit   '@aws/lambda-invoke-store': [ '0.3.0' ],
+16 silly audit   '@derhuerst/http-basic': [ '8.2.4' ],
+16 silly audit   '@smithy/core': [ '3.29.7' ],
+16 silly audit   '@smithy/credential-provider-imds': [ '4.4.12' ],
+16 silly audit   '@smithy/fetch-http-handler': [ '5.6.9' ],
+16 silly audit   '@smithy/node-http-handler': [ '4.9.9' ],
+16 silly audit   '@smithy/signature-v4': [ '5.6.8' ],
+16 silly audit   '@smithy/types': [ '4.16.1' ],
+16 silly audit   '@types/node': [ '10.17.60' ],
+16 silly audit   accepts: [ '2.0.0' ],
+16 silly audit   'agent-base': [ '6.0.2' ],
+16 silly audit   'append-field': [ '1.0.0' ],
+16 silly audit   'body-parser': [ '2.3.0' ],
+16 silly audit   'content-type': [ '2.0.0', '1.0.5' ],
+16 silly audit   bowser: [ '2.14.1' ],
+16 silly audit   'buffer-from': [ '1.1.2' ],
+16 silly audit   busboy: [ '1.6.0' ],
+16 silly audit   bytes: [ '3.1.2' ],
+16 silly audit   'call-bind-apply-helpers': [ '1.0.2' ],
+16 silly audit   'call-bound': [ '1.0.4' ],
+16 silly audit   caseless: [ '0.12.0' ],
+16 silly audit   'concat-stream': [ '2.0.0' ],
+16 silly audit   'content-disposition': [ '1.1.0' ],
+16 silly audit   cookie: [ '0.7.2' ],
+16 silly audit   'cookie-signature': [ '1.2.2' ],
+16 silly audit   debug: [ '4.4.3' ],
+16 silly audit   depd: [ '2.0.0' ],
+16 silly audit   dotenv: [ '17.4.2' ],
+16 silly audit   'dunder-proto': [ '1.0.1' ],
+16 silly audit   'ee-first': [ '1.1.1' ],
+16 silly audit   encodeurl: [ '2.0.0' ],
+16 silly audit   'env-paths': [ '2.2.1' ],
+16 silly audit   'es-define-property': [ '1.0.1' ],
+16 silly audit   'es-errors': [ '1.3.0' ],
+16 silly audit   'es-object-atoms': [ '1.1.2' ],
+16 silly audit   'escape-html': [ '1.0.3' ],
+16 silly audit   etag: [ '1.8.1' ],
+16 silly audit   express: [ '5.2.1' ],
+16 silly audit   'ffmpeg-static': [ '5.3.0' ],
+16 silly audit   finalhandler: [ '2.1.1' ],
+16 silly audit   forwarded: [ '0.2.0' ],
+16 silly audit   fresh: [ '2.0.0' ],
+16 silly audit   'function-bind': [ '1.1.2' ],
+16 silly audit   'get-intrinsic': [ '1.3.0' ],
+16 silly audit   'get-proto': [ '1.0.1' ],
+16 silly audit   gopd: [ '1.2.0' ],
+16 silly audit   'has-symbols': [ '1.1.0' ],
+16 silly audit   hasown: [ '2.0.4' ],
+16 silly audit   'http-errors': [ '2.0.1' ],
+16 silly audit   'http-response-object': [ '3.0.2' ],
+16 silly audit   'https-proxy-agent': [ '5.0.1' ],
+16 silly audit   'iconv-lite': [ '0.7.3' ],
+16 silly audit   inherits: [ '2.0.4' ],
+16 silly audit   'ipaddr.js': [ '1.9.1' ],
+16 silly audit   'is-promise': [ '4.0.0' ],
+16 silly audit   'math-intrinsics': [ '1.1.0' ],
+16 silly audit   'media-typer': [ '1.1.0', '0.3.0' ],
+16 silly audit   'merge-descriptors': [ '2.0.0' ],
+16 silly audit   'mime-db': [ '1.54.0', '1.52.0' ],
+16 silly audit   'mime-types': [ '3.0.2', '2.1.35' ],
+16 silly audit   ms: [ '2.1.3' ],
+16 silly audit   multer: [ '2.2.0' ],
+16 silly audit   'type-is': [ '1.6.18', '2.1.0' ],
+16 silly audit   negotiator: [ '1.0.0' ],
+16 silly audit   'object-inspect': [ '1.13.4' ],
+16 silly audit   'on-finished': [ '2.4.1' ],
+16 silly audit   once: [ '1.4.0' ],
+16 silly audit   openai: [ '5.23.2' ],
+16 silly audit   'parse-cache-control': [ '1.0.1' ],
+16 silly audit   parseurl: [ '1.3.3' ],
+16 silly audit   'path-to-regexp': [ '8.4.2' ],
+16 silly audit   pg: [ '8.22.0' ],
+16 silly audit   'pg-cloudflare': [ '1.4.0' ],
+16 silly audit   'pg-connection-string': [ '2.14.0' ],
+16 silly audit   'pg-int8': [ '1.0.1' ],
+16 silly audit   'pg-pool': [ '3.14.0' ],
+16 silly audit   'pg-protocol': [ '1.15.0' ],
+16 silly audit   'pg-types': [ '2.2.0' ],
+16 silly audit   pgpass: [ '1.0.5' ],
+16 silly audit   'postgres-array': [ '2.0.0' ],
+16 silly audit   'postgres-bytea': [ '1.0.1' ],
+16 silly audit   'postgres-date': [ '1.0.7' ],
+16 silly audit   'postgres-interval': [ '1.2.0' ],
+16 silly audit   progress: [ '2.0.3' ],
+16 silly audit   'proxy-addr': [ '2.0.7' ],
+16 silly audit   qs: [ '6.15.3' ],
+16 silly audit   'range-parser': [ '1.3.0' ],
+16 silly audit   'raw-body': [ '3.0.2' ],
+16 silly audit   'readable-stream': [ '3.6.2' ],
+16 silly audit   router: [ '2.2.0' ],
+16 silly audit   'safe-buffer': [ '5.2.1' ],
+16 silly audit   'safer-buffer': [ '2.1.2' ],
+16 silly audit   send: [ '1.2.1' ],
+16 silly audit   'serve-static': [ '2.2.1' ],
+16 silly audit   setprototypeof: [ '1.2.0' ],
+16 silly audit   'side-channel': [ '1.1.1' ],
+16 silly audit   'side-channel-list': [ '1.0.1' ],
+16 silly audit   'side-channel-map': [ '1.0.1' ],
+16 silly audit   'side-channel-weakmap': [ '1.0.2' ],
+16 silly audit   split2: [ '4.2.0' ],
+16 silly audit   statuses: [ '2.0.2' ],
+16 silly audit   streamsearch: [ '1.1.0' ],
+16 silly audit   string_decoder: [ '1.3.0' ],
+16 silly audit   toidentifier: [ '1.0.1' ],
+16 silly audit   tslib: [ '2.8.1' ],
+16 silly audit   typedarray: [ '0.0.6' ],
+16 silly audit   unpipe: [ '1.0.0' ],
+16 silly audit   'util-deprecate': [ '1.0.2' ],
+16 silly audit   vary: [ '1.1.2' ],
+16 silly audit   wrappy: [ '1.0.2' ],
+16 silly audit   xtend: [ '4.0.2' ]
+16 silly audit }
+17 http cache xtend@https://registry.npmjs.org/xtend/-/xtend-4.0.2.tgz 0ms (cache hit)
+18 http cache postgres-interval@https://registry.npmjs.org/postgres-interval/-/postgres-interval-1.2.0.tgz 0ms (cache hit)
+19 http cache split2@https://registry.npmjs.org/split2/-/split2-4.2.0.tgz 0ms (cache hit)
+20 http cache postgres-date@https://registry.npmjs.org/postgres-date/-/postgres-date-1.0.7.tgz 0ms (cache hit)
+21 http cache postgres-bytea@https://registry.npmjs.org/postgres-bytea/-/postgres-bytea-1.0.1.tgz 0ms (cache hit)
+22 http cache postgres-array@https://registry.npmjs.org/postgres-array/-/postgres-array-2.0.0.tgz 0ms (cache hit)
+23 http cache pgpass@https://registry.npmjs.org/pgpass/-/pgpass-1.0.5.tgz 0ms (cache hit)
+24 http cache pg-protocol@https://registry.npmjs.org/pg-protocol/-/pg-protocol-1.15.0.tgz 0ms (cache hit)
+25 http cache pg-pool@https://registry.npmjs.org/pg-pool/-/pg-pool-3.14.0.tgz 0ms (cache hit)
+26 http cache pg-int8@https://registry.npmjs.org/pg-int8/-/pg-int8-1.0.1.tgz 0ms (cache hit)
+27 http cache pg-types@https://registry.npmjs.org/pg-types/-/pg-types-2.2.0.tgz 0ms (cache hit)
+28 http cache pg-connection-string@https://registry.npmjs.org/pg-connection-string/-/pg-connection-string-2.14.0.tgz 0ms (cache hit)
+29 http cache pg@https://registry.npmjs.org/pg/-/pg-8.22.0.tgz 0ms (cache hit)
+30 http cache pg-cloudflare@https://registry.npmjs.org/pg-cloudflare/-/pg-cloudflare-1.4.0.tgz 0ms (cache hit)
+31 http cache @smithy/types@https://registry.npmjs.org/@smithy/types/-/types-4.16.1.tgz 0ms (cache hit)
+32 http cache bowser@https://registry.npmjs.org/bowser/-/bowser-2.14.1.tgz 0ms (cache hit)
+33 http cache @smithy/signature-v4@https://registry.npmjs.org/@smithy/signature-v4/-/signature-v4-5.6.8.tgz 0ms (cache hit)
+34 http cache @smithy/node-http-handler@https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.9.9.tgz 0ms (cache hit)
+35 http cache @smithy/fetch-http-handler@https://registry.npmjs.org/@smithy/fetch-http-handler/-/fetch-http-handler-5.6.9.tgz 0ms (cache hit)
+36 http cache @smithy/core@https://registry.npmjs.org/@smithy/core/-/core-3.29.7.tgz 0ms (cache hit)
+37 http cache @aws/lambda-invoke-store@https://registry.npmjs.org/@aws/lambda-invoke-store/-/lambda-invoke-store-0.3.0.tgz 0ms (cache hit)
+38 http cache @smithy/credential-provider-imds@https://registry.npmjs.org/@smithy/credential-provider-imds/-/credential-provider-imds-4.4.12.tgz 0ms (cache hit)
+39 http cache @aws-sdk/xml-builder@https://registry.npmjs.org/@aws-sdk/xml-builder/-/xml-builder-3.972.36.tgz 0ms (cache hit)
+40 http cache @aws-sdk/types@https://registry.npmjs.org/@aws-sdk/types/-/types-3.974.2.tgz 0ms (cache hit)
+41 http cache @aws-sdk/token-providers@https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1092.0.tgz 0ms (cache hit)
+42 http cache @aws-sdk/signature-v4-multi-region@https://registry.npmjs.org/@aws-sdk/signature-v4-multi-region/-/signature-v4-multi-region-3.996.41.tgz 0ms (cache hit)
+43 http cache @aws-sdk/s3-request-presigner@https://registry.npmjs.org/@aws-sdk/s3-request-presigner/-/s3-request-presigner-3.1092.0.tgz 0ms (cache hit)
+44 http cache @aws-sdk/nested-clients@https://registry.npmjs.org/@aws-sdk/nested-clients/-/nested-clients-3.997.34.tgz 0ms (cache hit)
+45 http cache @aws-sdk/middleware-sdk-s3@https://registry.npmjs.org/@aws-sdk/middleware-sdk-s3/-/middleware-sdk-s3-3.972.65.tgz 0ms (cache hit)
+46 http cache @aws-sdk/credential-provider-sso@https://registry.npmjs.org/@aws-sdk/credential-provider-sso/-/credential-provider-sso-3.973.4.tgz 0ms (cache hit)
+47 http cache @aws-sdk/credential-provider-web-identity@https://registry.npmjs.org/@aws-sdk/credential-provider-web-identity/-/credential-provider-web-identity-3.972.66.tgz 0ms (cache hit)
+48 http cache @aws-sdk/credential-provider-process@https://registry.npmjs.org/@aws-sdk/credential-provider-process/-/credential-provider-process-3.972.60.tgz 0ms (cache hit)
+49 http cache @aws-sdk/credential-provider-node@https://registry.npmjs.org/@aws-sdk/credential-provider-node/-/credential-provider-node-3.972.71.tgz 0ms (cache hit)
+50 http cache @aws-sdk/credential-provider-login@https://registry.npmjs.org/@aws-sdk/credential-provider-login/-/credential-provider-login-3.972.67.tgz 0ms (cache hit)
+51 http cache @aws-sdk/credential-provider-ini@https://registry.npmjs.org/@aws-sdk/credential-provider-ini/-/credential-provider-ini-3.973.5.tgz 0ms (cache hit)
+52 http cache @aws-sdk/credential-provider-http@https://registry.npmjs.org/@aws-sdk/credential-provider-http/-/credential-provider-http-3.972.62.tgz 0ms (cache hit)
+53 http cache @aws-sdk/credential-provider-env@https://registry.npmjs.org/@aws-sdk/credential-provider-env/-/credential-provider-env-3.972.60.tgz 0ms (cache hit)
+54 http cache @aws-sdk/core@https://registry.npmjs.org/@aws-sdk/core/-/core-3.976.0.tgz 0ms (cache hit)
+55 http cache @aws-sdk/client-s3@https://registry.npmjs.org/@aws-sdk/client-s3/-/client-s3-3.1092.0.tgz 0ms (cache hit)
+56 http cache @aws-sdk/checksums@https://registry.npmjs.org/@aws-sdk/checksums/-/checksums-3.1000.19.tgz 0ms (cache hit)
+57 http cache tslib@https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz 0ms (cache hit)
+58 silly tarball no local data for xtend@https://registry.npmjs.org/xtend/-/xtend-4.0.2.tgz. Extracting by manifest.
+59 silly tarball no local data for postgres-interval@https://registry.npmjs.org/postgres-interval/-/postgres-interval-1.2.0.tgz. Extracting by manifest.
+60 silly tarball no local data for split2@https://registry.npmjs.org/split2/-/split2-4.2.0.tgz. Extracting by manifest.
+61 silly tarball no local data for postgres-date@https://registry.npmjs.org/postgres-date/-/postgres-date-1.0.7.tgz. Extracting by manifest.
+62 silly tarball no local data for postgres-bytea@https://registry.npmjs.org/postgres-bytea/-/postgres-bytea-1.0.1.tgz. Extracting by manifest.
+63 silly tarball no local data for postgres-array@https://registry.npmjs.org/postgres-array/-/postgres-array-2.0.0.tgz. Extracting by manifest.
+64 silly tarball no local data for pgpass@https://registry.npmjs.org/pgpass/-/pgpass-1.0.5.tgz. Extracting by manifest.
+65 silly tarball no local data for pg-protocol@https://registry.npmjs.org/pg-protocol/-/pg-protocol-1.15.0.tgz. Extracting by manifest.
+66 silly tarball no local data for pg-pool@https://registry.npmjs.org/pg-pool/-/pg-pool-3.14.0.tgz. Extracting by manifest.
+67 silly tarball no local data for pg-int8@https://registry.npmjs.org/pg-int8/-/pg-int8-1.0.1.tgz. Extracting by manifest.
+68 silly tarball no local data for pg-types@https://registry.npmjs.org/pg-types/-/pg-types-2.2.0.tgz. Extracting by manifest.
+69 silly tarball no local data for pg-connection-string@https://registry.npmjs.org/pg-connection-string/-/pg-connection-string-2.14.0.tgz. Extracting by manifest.
+70 silly tarball no local data for pg@https://registry.npmjs.org/pg/-/pg-8.22.0.tgz. Extracting by manifest.
+71 silly tarball no local data for pg-cloudflare@https://registry.npmjs.org/pg-cloudflare/-/pg-cloudflare-1.4.0.tgz. Extracting by manifest.
+72 silly tarball no local data for @smithy/types@https://registry.npmjs.org/@smithy/types/-/types-4.16.1.tgz. Extracting by manifest.
+73 silly tarball no local data for bowser@https://registry.npmjs.org/bowser/-/bowser-2.14.1.tgz. Extracting by manifest.
+74 silly tarball no local data for @smithy/signature-v4@https://registry.npmjs.org/@smithy/signature-v4/-/signature-v4-5.6.8.tgz. Extracting by manifest.
+75 silly tarball no local data for @smithy/node-http-handler@https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.9.9.tgz. Extracting by manifest.
+76 silly tarball no local data for @smithy/fetch-http-handler@https://registry.npmjs.org/@smithy/fetch-http-handler/-/fetch-http-handler-5.6.9.tgz. Extracting by manifest.
+77 silly tarball no local data for @smithy/core@https://registry.npmjs.org/@smithy/core/-/core-3.29.7.tgz. Extracting by manifest.
+78 silly tarball no local data for @aws/lambda-invoke-store@https://registry.npmjs.org/@aws/lambda-invoke-store/-/lambda-invoke-store-0.3.0.tgz. Extracting by manifest.
+79 silly tarball no local data for @smithy/credential-provider-imds@https://registry.npmjs.org/@smithy/credential-provider-imds/-/credential-provider-imds-4.4.12.tgz. Extracting by manifest.
+80 silly tarball no local data for @aws-sdk/xml-builder@https://registry.npmjs.org/@aws-sdk/xml-builder/-/xml-builder-3.972.36.tgz. Extracting by manifest.
+81 silly tarball no local data for @aws-sdk/types@https://registry.npmjs.org/@aws-sdk/types/-/types-3.974.2.tgz. Extracting by manifest.
+82 silly tarball no local data for @aws-sdk/token-providers@https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1092.0.tgz. Extracting by manifest.
+83 silly tarball no local data for @aws-sdk/signature-v4-multi-region@https://registry.npmjs.org/@aws-sdk/signature-v4-multi-region/-/signature-v4-multi-region-3.996.41.tgz. Extracting by manifest.
+84 silly tarball no local data for @aws-sdk/s3-request-presigner@https://registry.npmjs.org/@aws-sdk/s3-request-presigner/-/s3-request-presigner-3.1092.0.tgz. Extracting by manifest.
+85 silly tarball no local data for @aws-sdk/nested-clients@https://registry.npmjs.org/@aws-sdk/nested-clients/-/nested-clients-3.997.34.tgz. Extracting by manifest.
+86 silly tarball no local data for @aws-sdk/middleware-sdk-s3@https://registry.npmjs.org/@aws-sdk/middleware-sdk-s3/-/middleware-sdk-s3-3.972.65.tgz. Extracting by manifest.
+87 silly tarball no local data for @aws-sdk/credential-provider-sso@https://registry.npmjs.org/@aws-sdk/credential-provider-sso/-/credential-provider-sso-3.973.4.tgz. Extracting by manifest.
+88 silly tarball no local data for @aws-sdk/credential-provider-web-identity@https://registry.npmjs.org/@aws-sdk/credential-provider-web-identity/-/credential-provider-web-identity-3.972.66.tgz. Extracting by manifest.
+89 silly tarball no local data for @aws-sdk/credential-provider-process@https://registry.npmjs.org/@aws-sdk/credential-provider-process/-/credential-provider-process-3.972.60.tgz. Extracting by manifest.
+90 silly tarball no local data for @aws-sdk/credential-provider-node@https://registry.npmjs.org/@aws-sdk/credential-provider-node/-/credential-provider-node-3.972.71.tgz. Extracting by manifest.
+91 silly tarball no local data for @aws-sdk/credential-provider-login@https://registry.npmjs.org/@aws-sdk/credential-provider-login/-/credential-provider-login-3.972.67.tgz. Extracting by manifest.
+92 silly tarball no local data for @aws-sdk/credential-provider-ini@https://registry.npmjs.org/@aws-sdk/credential-provider-ini/-/credential-provider-ini-3.973.5.tgz. Extracting by manifest.
+93 silly tarball no local data for @aws-sdk/credential-provider-http@https://registry.npmjs.org/@aws-sdk/credential-provider-http/-/credential-provider-http-3.972.62.tgz. Extracting by manifest.
+94 silly tarball no local data for @aws-sdk/credential-provider-env@https://registry.npmjs.org/@aws-sdk/credential-provider-env/-/credential-provider-env-3.972.60.tgz. Extracting by manifest.
+95 silly tarball no local data for @aws-sdk/core@https://registry.npmjs.org/@aws-sdk/core/-/core-3.976.0.tgz. Extracting by manifest.
+96 silly tarball no local data for @aws-sdk/client-s3@https://registry.npmjs.org/@aws-sdk/client-s3/-/client-s3-3.1092.0.tgz. Extracting by manifest.
+97 silly tarball no local data for @aws-sdk/checksums@https://registry.npmjs.org/@aws-sdk/checksums/-/checksums-3.1000.19.tgz. Extracting by manifest.
+98 silly tarball no local data for tslib@https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz. Extracting by manifest.
+99 http fetch GET 200 https://registry.npmjs.org/postgres-array/-/postgres-array-2.0.0.tgz 350ms (cache miss)
+100 http fetch GET 200 https://registry.npmjs.org/pg-connection-string/-/pg-connection-string-2.14.0.tgz 350ms (cache miss)
+101 http fetch GET 200 https://registry.npmjs.org/postgres-bytea/-/postgres-bytea-1.0.1.tgz 351ms (cache miss)
+102 http fetch GET 200 https://registry.npmjs.org/pgpass/-/pgpass-1.0.5.tgz 351ms (cache miss)
+103 http fetch GET 200 https://registry.npmjs.org/pg-int8/-/pg-int8-1.0.1.tgz 350ms (cache miss)
+104 http fetch GET 200 https://registry.npmjs.org/postgres-interval/-/postgres-interval-1.2.0.tgz 352ms (cache miss)
+105 http fetch GET 200 https://registry.npmjs.org/split2/-/split2-4.2.0.tgz 352ms (cache miss)
+106 http fetch GET 200 https://registry.npmjs.org/postgres-date/-/postgres-date-1.0.7.tgz 351ms (cache miss)
+107 http fetch GET 200 https://registry.npmjs.org/xtend/-/xtend-4.0.2.tgz 353ms (cache miss)
+108 http fetch GET 200 https://registry.npmjs.org/pg-types/-/pg-types-2.2.0.tgz 353ms (cache miss)
+109 http fetch GET 200 https://registry.npmjs.org/pg-protocol/-/pg-protocol-1.15.0.tgz 357ms (cache miss)
+110 http fetch GET 200 https://registry.npmjs.org/@aws/lambda-invoke-store/-/lambda-invoke-store-0.3.0.tgz 795ms (cache miss)
+111 http fetch GET 200 https://registry.npmjs.org/pg-pool/-/pg-pool-3.14.0.tgz 797ms (cache miss)
+112 http fetch GET 200 https://registry.npmjs.org/pg-cloudflare/-/pg-cloudflare-1.4.0.tgz 800ms (cache miss)
+113 http fetch GET 200 https://registry.npmjs.org/@smithy/fetch-http-handler/-/fetch-http-handler-5.6.9.tgz 805ms (cache miss)
+114 http fetch GET 200 https://registry.npmjs.org/bowser/-/bowser-2.14.1.tgz 814ms (cache miss)
+115 http fetch GET 200 https://registry.npmjs.org/pg/-/pg-8.22.0.tgz 822ms (cache miss)
+116 http fetch GET 200 https://registry.npmjs.org/@aws-sdk/signature-v4-multi-region/-/signature-v4-multi-region-3.996.41.tgz 823ms (cache miss)
+117 http fetch GET 200 https://registry.npmjs.org/npm 907ms
+118 http fetch GET 200 https://registry.npmjs.org/@aws-sdk/s3-request-presigner/-/s3-request-presigner-3.1092.0.tgz 841ms (cache miss)
+119 http fetch GET 200 https://registry.npmjs.org/@aws-sdk/xml-builder/-/xml-builder-3.972.36.tgz 850ms (cache miss)
+120 http fetch GET 200 https://registry.npmjs.org/@aws-sdk/credential-provider-web-identity/-/credential-provider-web-identity-3.972.66.tgz 858ms (cache miss)
+121 http fetch GET 200 https://registry.npmjs.org/@smithy/signature-v4/-/signature-v4-5.6.8.tgz 864ms (cache miss)
+122 http fetch GET 200 https://registry.npmjs.org/@aws-sdk/credential-provider-process/-/credential-provider-process-3.972.60.tgz 869ms (cache miss)
+123 http fetch GET 200 https://registry.npmjs.org/@aws-sdk/credential-provider-node/-/credential-provider-node-3.972.71.tgz 869ms (cache miss)
+124 http fetch GET 200 https://registry.npmjs.org/@aws-sdk/credential-provider-env/-/credential-provider-env-3.972.60.tgz 870ms (cache miss)
+125 http fetch GET 200 https://registry.npmjs.org/@aws-sdk/credential-provider-login/-/credential-provider-login-3.972.67.tgz 872ms (cache miss)
+126 http fetch GET 200 https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.9.9.tgz 876ms (cache miss)
+127 http fetch GET 200 https://registry.npmjs.org/@aws-sdk/credential-provider-sso/-/credential-provider-sso-3.973.4.tgz 875ms (cache miss)
+128 http fetch GET 200 https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz 880ms (cache miss)
+129 http fetch GET 200 https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1092.0.tgz 886ms (cache miss)
+130 http fetch GET 200 https://registry.npmjs.org/@aws-sdk/credential-provider-ini/-/credential-provider-ini-3.973.5.tgz 891ms (cache miss)
+131 http fetch GET 200 https://registry.npmjs.org/@aws-sdk/credential-provider-http/-/credential-provider-http-3.972.62.tgz 906ms (cache miss)
+132 http fetch GET 200 https://registry.npmjs.org/@smithy/credential-provider-imds/-/credential-provider-imds-4.4.12.tgz 914ms (cache miss)
+133 http fetch GET 200 https://registry.npmjs.org/@aws-sdk/types/-/types-3.974.2.tgz 940ms (cache miss)
+134 http fetch GET 200 https://registry.npmjs.org/@smithy/types/-/types-4.16.1.tgz 1012ms (cache miss)
+135 http fetch GET 200 https://registry.npmjs.org/@aws-sdk/checksums/-/checksums-3.1000.19.tgz 1015ms (cache miss)
+136 http fetch GET 200 https://registry.npmjs.org/@aws-sdk/middleware-sdk-s3/-/middleware-sdk-s3-3.972.65.tgz 1028ms (cache miss)
+137 http fetch GET 200 https://registry.npmjs.org/@aws-sdk/client-s3/-/client-s3-3.1092.0.tgz 1133ms (cache miss)
+138 http fetch GET 200 https://registry.npmjs.org/@aws-sdk/nested-clients/-/nested-clients-3.997.34.tgz 1138ms (cache miss)
+139 http fetch GET 200 https://registry.npmjs.org/@aws-sdk/core/-/core-3.976.0.tgz 1137ms (cache miss)
+140 http fetch GET 200 https://registry.npmjs.org/@smithy/core/-/core-3.29.7.tgz 1267ms (cache miss)
+141 http fetch POST 200 https://registry.npmjs.org/-/npm/v1/security/advisories/bulk 1303ms
+142 silly audit report {}
+143 silly ADD node_modules/xtend
+144 silly ADD node_modules/tslib
+145 silly ADD node_modules/split2
+146 silly ADD node_modules/postgres-interval
+147 silly ADD node_modules/postgres-date
+148 silly ADD node_modules/postgres-bytea
+149 silly ADD node_modules/postgres-array
+150 silly ADD node_modules/pgpass
+151 silly ADD node_modules/pg-types
+152 silly ADD node_modules/pg-protocol
+153 silly ADD node_modules/pg-pool
+154 silly ADD node_modules/pg-int8
+155 silly ADD node_modules/pg-connection-string
+156 silly ADD node_modules/pg-cloudflare
+157 silly ADD node_modules/pg
+158 silly ADD node_modules/bowser
+159 silly ADD node_modules/@smithy/types
+160 silly ADD node_modules/@smithy/signature-v4
+161 silly ADD node_modules/@smithy/node-http-handler
+162 silly ADD node_modules/@smithy/fetch-http-handler
+163 silly ADD node_modules/@smithy/credential-provider-imds
+164 silly ADD node_modules/@smithy/core
+165 silly ADD node_modules/@aws/lambda-invoke-store
+166 silly ADD node_modules/@aws-sdk/xml-builder
+167 silly ADD node_modules/@aws-sdk/types
+168 silly ADD node_modules/@aws-sdk/token-providers
+169 silly ADD node_modules/@aws-sdk/signature-v4-multi-region
+170 silly ADD node_modules/@aws-sdk/s3-request-presigner
+171 silly ADD node_modules/@aws-sdk/nested-clients
+172 silly ADD node_modules/@aws-sdk/middleware-sdk-s3
+173 silly ADD node_modules/@aws-sdk/credential-provider-web-identity
+174 silly ADD node_modules/@aws-sdk/credential-provider-sso
+175 silly ADD node_modules/@aws-sdk/credential-provider-process
+176 silly ADD node_modules/@aws-sdk/credential-provider-node
+177 silly ADD node_modules/@aws-sdk/credential-provider-login
+178 silly ADD node_modules/@aws-sdk/credential-provider-ini
+179 silly ADD node_modules/@aws-sdk/credential-provider-http
+180 silly ADD node_modules/@aws-sdk/credential-provider-env
+181 silly ADD node_modules/@aws-sdk/core
+182 silly ADD node_modules/@aws-sdk/client-s3
+183 silly ADD node_modules/@aws-sdk/checksums
+184 warn allow-scripts 1 package has install scripts not yet covered by allowScripts:
+184 warn allow-scripts   ffmpeg-static@5.3.0 (install: (install scripts present))
+184 warn allow-scripts
+184 warn allow-scripts Run `npm approve-scripts --allow-scripts-pending` to review, or `npm approve-scripts <pkg>` to allow.
+185 verbose cwd /Users/thegoat/Documents/Friendly Partners AI/KlipPharma
+186 verbose os Darwin 21.4.0
+187 verbose node v24.18.0
+188 verbose npm  v11.16.0
+189 notice
+189 notice New [31mmajor[39m version of npm available! [31m11.16.0[39m -> [34m12.0.1[39m
+189 notice Changelog: [34mhttps://github.com/npm/cli/releases/tag/v12.0.1[39m
+189 notice To update run: [4mnpm install -g npm@12.0.1[24m
+189 notice  { force: true, Symbol(proc-log.meta): true }
+190 verbose exit 0
+191 info ok

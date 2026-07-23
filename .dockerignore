@@ -1,0 +1,9 @@
+node_modules
+.env*
+.git
+.DS_Store
+storage/uploads/*
+storage/exports/*
+storage/projects/*
+*.zip
+npm-debug.log*

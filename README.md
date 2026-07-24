@@ -1,6 +1,8 @@
 # KlipPharma
 
-KlipPharma turns long-form video into ranked, captioned vertical clips and can also assemble a batch into one CapCut-style Auto-Mix. The night-studio workspace supports mixed AI/manual batch uploads, creator-specific editorial modes, optional timestamped transcription, audience-aware clip scoring, browser-safe previews, adjustable start/end points, editable captions and watermarks, saved project history, feedback, and downloadable 9:16 MP4 exports.
+Current release: **v0.20.0 · Multilingual studio + creator-owned YouTube import**
+
+KlipPharma turns long-form video into ranked, captioned vertical clips and can also assemble a batch into one CapCut-style Auto-Mix. The night-studio workspace supports mixed AI/manual batch uploads, creator-specific editorial modes, owner-authorized YouTube importing, multilingual transcription, translated captions and optional AI-dubbed audio, audience-aware clip scoring, browser-safe previews, adjustable start/end points, editable captions and watermarks, saved project history, feedback, and downloadable 9:16 MP4 exports.
 
 **We pick the dopest klips!**
 
@@ -50,6 +52,18 @@ Set `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_BUCKET`
 
 `Dockerfile` packages the web app and FFmpeg runtime for a container host. `compose.production.example.yml` shows the required production environment without embedding secrets. Keep `/app/storage` on a persistent volume until rendered exports are moved to R2. The container exposes port 3100 and includes an application health check at `/api/health`.
 
+## Importing your own YouTube uploads
+
+The source step accepts one public or unlisted YouTube video at a time. The creator must confirm that they own the video or have permission to download and edit it. KlipPharma rejects playlists, live streams, private, paid, age-restricted, account-only, and protected videos. Imported sources are capped at four hours and 1 GB.
+
+The Docker image installs the pinned yt-dlp runtime automatically. For local Mac development, install it once and restart KlipPharma:
+
+```bash
+brew install yt-dlp
+```
+
+Set `YT_DLP_PATH` only when the executable is not available as `yt-dlp` on the server PATH. Once the source download completes, the processing screen exposes **Download source MP4** while KlipPharma continues into AI transcription or the manual cutter. YouTube may still require creators to use the official Studio download for restricted uploads.
+
 ## Editing a suggested klip
 
 Each AI recommendation includes a playable source preview and start/end sliders. Drag either slider to correct the cut, then use **Preview selected cut** to watch only that selection. Klips may be up to 90 seconds long. The revised timestamps save automatically and are used by **Create vertical clip**.
@@ -82,6 +96,12 @@ AI-generated recommendations include a short strategy lane so the creator can se
 ## AI Auto-Klip batch recipe
 
 Before processing, choose **Smart**, **15**, **30**, **45**, **60**, or **90 seconds** as the maximum starting length for every AI-enabled source in the batch. Smart lets the AI choose the shortest complete duration between 15 and 90 seconds. A timed recipe asks the AI for complete thoughts within the chosen maximum and the server enforces that limit. Recommendations remain editable afterward with the start/end scrub controls, up to the product-wide 90-second maximum. Manual/no-transcript sources skip the AI recipe.
+
+## Language Studio
+
+Before processing, choose the spoken language or leave it on **Auto detect**. The AI workflow saves the original timestamped transcript and can translate captions into English, Spanish, French, Portuguese, German, Italian, Japanese, Korean, Chinese, Arabic, or Hindi. Translated words appear in the existing caption editor, so creators can correct names, slang, lyrics, and phrasing before export.
+
+When **AI translated voiceover** is enabled, KlipPharma generates speech from the translated caption text during the final render and keeps the original source sound quietly underneath. The chosen voice and translation settings apply to individual klips and Auto-Mix moments. Manual/no-transcript sources skip translation and dubbing. Translation uses the configured text model; voiceover uses `AI_SPEECH_MODEL` (default `gpt-4o-mini-tts`), so both features consume OpenAI API credits only when selected.
 
 ## Batch Auto-Mix
 

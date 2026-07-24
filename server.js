@@ -8,6 +8,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { normalizeYouTubeSource, sanitizeYouTubeTitle } from "./lib/youtube.js";
 import {
   AuthError,
   authMode,
@@ -66,6 +67,21 @@ const creatorModes = {
     prompt: "Edit like a short-form talking-head specialist. Remove greetings and slow preamble from the selection, lead with the sharpest claim or promise, and keep one clear idea per clip. Prioritize cold opens, teachable points, contrarian takes, emotional admissions, and direct calls to action. Prefer 15-60 second clips with a fast hook and a complete final sentence. Vary strategies across lesson, hot take, story, and CTA when supported.",
   },
 };
+const supportedLanguages = {
+  auto: { label: "Auto detect", code: null },
+  en: { label: "English", code: "en" },
+  es: { label: "Spanish", code: "es" },
+  fr: { label: "French", code: "fr" },
+  pt: { label: "Portuguese", code: "pt" },
+  de: { label: "German", code: "de" },
+  it: { label: "Italian", code: "it" },
+  ja: { label: "Japanese", code: "ja" },
+  ko: { label: "Korean", code: "ko" },
+  zh: { label: "Chinese", code: "zh" },
+  ar: { label: "Arabic", code: "ar" },
+  hi: { label: "Hindi", code: "hi" },
+};
+const supportedDubVoices = new Set(["alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"]);
 let activeProjects = 0;
 
 const upload = multer({
@@ -130,6 +146,7 @@ app.post("/api/auth/logout", async (req, res) => {
 app.use("/api/uploads", requireUser);
 app.use("/api/projects", requireUser);
 app.use("/api/batches", requireUser);
+app.use("/api/youtube", requireUser);
 
 app.post("/api/uploads/presign", async (req, res) => {
   if (!objectStorageConfigured) return res.status(409).json({ error: "Direct cloud uploads are not enabled on this installation." });
@@ -226,6 +243,73 @@ app.post("/api/projects", upload.any(), (req, res) => {
   res.status(202).json(result);
 });
 
+app.post("/api/youtube/import", (req, res) => {
+  if (req.body.ownershipConfirmed !== true) {
+    return res.status(400).json({ error: "Confirm that you own this video or have permission to download and edit it." });
+  }
+
+  let source;
+  try {
+    source = normalizeYouTubeSource(req.body.url);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+
+  const activeImport = [...jobs.values()].some((job) => (
+    job.userId === req.user.id && job.sourceProvider === "youtube" && (job.status === "queued" || job.status === "processing")
+  ));
+  if (activeImport) return res.status(409).json({ error: "Finish the current YouTube import before starting another one." });
+
+  const id = crypto.randomUUID();
+  const job = {
+    id,
+    userId: req.user.id,
+    batchId: id,
+    batchPosition: 1,
+    batchSize: 1,
+    status: "processing",
+    progress: 3,
+    stage: "Connecting to your YouTube source",
+    originalName: "YouTube video · preparing",
+    filePath: null,
+    objectKey: null,
+    mimeType: "video/mp4",
+    sourceProvider: "youtube",
+    sourceVideoId: source.videoId,
+    sourceReady: false,
+    ownershipConfirmedAt: new Date().toISOString(),
+    processingMode: req.body.transcribe === false ? "manual" : "ai",
+    contentType: normalizeCreatorMode(req.body.contentType),
+    clipLength: normalizeClipLength(req.body.clipLength),
+    createMontage: false,
+    watermarkText: normalizeWatermarkText(req.body.watermarkText),
+    watermarkPosition: normalizeOverlayPosition(req.body.watermarkPosition),
+    planTier: normalizePlanTier(req.user.planTier),
+    klipPharmaWatermarkRequired: !hasPaidPlan(req.user.planTier),
+    audience: req.body.audience || "General audience",
+    goal: req.body.goal || "High-retention social clips",
+    platform: req.body.platform || "Instagram Reels",
+    createdAt: new Date().toISOString(),
+  };
+  jobs.set(id, job);
+  persistJob(job);
+
+  importYouTubeSource(job, source.canonicalUrl)
+    .catch((error) => {
+      console.error("YouTube import failed:", error);
+      removeYouTubeWorkingFiles(job.id);
+      Object.assign(job, {
+        status: "failed",
+        progress: 100,
+        stage: "YouTube import failed",
+        error: friendlyYouTubeError(error),
+      });
+      persistJob(job);
+    });
+
+  return res.status(202).json({ id, batchId: id, ids: [id], sourceProvider: "youtube" });
+});
+
 app.post("/api/projects/cloud", async (req, res) => {
   if (!objectStorageConfigured) return res.status(409).json({ error: "Cloud object storage is not configured." });
   const sources = Array.isArray(req.body.sources) ? req.body.sources.slice(0, 10) : [];
@@ -268,6 +352,10 @@ function createProjectBatch(req, files, fileOptions = []) {
       objectKey: file.objectKey || null,
       mimeType: file.mimetype,
       processingMode: fileOptions[index]?.transcribe === false ? "manual" : "ai",
+      sourceLanguage: normalizeSourceLanguage(req.body.sourceLanguage),
+      translationLanguage: normalizeTranslationLanguage(req.body.translationLanguage),
+      audioTranslation: normalizeAudioTranslation(req.body.audioTranslation, req.body.translationLanguage),
+      dubVoice: normalizeDubVoice(req.body.dubVoice),
       contentType: normalizeCreatorMode(req.body.contentType),
       clipLength: normalizeClipLength(req.body.clipLength),
       createMontage: req.body.createMontage === true || req.body.createMontage === "true",
@@ -305,6 +393,9 @@ function createProjectBatch(req, files, fileOptions = []) {
       audioFadeOut: 1,
       autoDuck: true,
       revision: 1,
+      translationLanguage: owner.translationLanguage,
+      audioTranslation: owner.audioTranslation,
+      dubVoice: owner.dubVoice,
     };
     persistJob(owner);
   }
@@ -342,7 +433,7 @@ app.get("/api/projects/:id", (req, res) => {
   const safe = { ...job, montage: job.montage ? { ...job.montage } : undefined };
   safe.planTier = normalizePlanTier(req.user.planTier);
   safe.klipPharmaWatermarkRequired = !hasPaidPlan(req.user.planTier);
-  if (!isAudioOnly(job.filePath)) safe.sourceUrl = `/api/projects/${job.id}/source`;
+  if (job.filePath && !isAudioOnly(job.filePath)) safe.sourceUrl = `/api/projects/${job.id}/source`;
   if (safe.montage && job.montageAudioPath && fs.existsSync(job.montageAudioPath)) {
     safe.montage.audioName = job.montageAudioName || "Added sound";
     safe.montage.audioUrl = `/api/projects/${job.id}/montage/audio`;
@@ -363,9 +454,10 @@ app.get("/api/projects/:id/source", async (req, res) => {
   try {
     await ensureLocalSource(job);
     res.type(job.mimeType || mimeTypeFor(job.filePath));
-    res.sendFile(job.filePath);
+    if (req.query.download === "1") return res.download(job.filePath, path.basename(job.originalName || "KlipPharma-source.mp4"));
+    return res.sendFile(job.filePath);
   } catch (error) {
-    res.status(404).json({ error: error.message || "The original source file is no longer available." });
+    return res.status(404).json({ error: error.message || "The original source file is no longer available." });
   }
 });
 
@@ -557,6 +649,89 @@ app.post("/api/projects/:id/clips/:clipId/feedback", (req, res) => {
   res.json({ ok: true });
 });
 
+async function importYouTubeSource(job, canonicalUrl) {
+  const outputTemplate = path.join(uploadDir, `${job.id}.%(ext)s`);
+  const args = [
+    "--no-playlist",
+    "--no-warnings",
+    "--newline",
+    "--max-filesize", "1024M",
+    "--match-filter", "duration <= 14400 & !is_live",
+    "--format", "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/b[height<=1080][ext=mp4]/bv*[height<=1080]+ba/b[height<=1080]",
+    "--merge-output-format", "mp4",
+    "--remux-video", "mp4",
+    "--ffmpeg-location", ffmpegPath || "ffmpeg",
+    "--output", outputTemplate,
+    "--print", "after_move:%(title)s",
+    "--print", "after_move:%(filepath)s",
+    canonicalUrl,
+  ];
+  const result = await runYouTubeDownload(process.env.YT_DLP_PATH || "yt-dlp", args, job);
+  const candidates = fs.readdirSync(uploadDir)
+    .filter((name) => name.startsWith(`${job.id}.`) && !name.endsWith(".part") && !name.endsWith(".ytdl"))
+    .map((name) => path.join(uploadDir, name))
+    .filter((filePath) => fs.statSync(filePath).isFile());
+  const downloaded = candidates.sort((a, b) => fs.statSync(b).size - fs.statSync(a).size)[0];
+  if (!downloaded) throw new Error("yt-dlp completed without producing a video file.");
+  const size = fs.statSync(downloaded).size;
+  if (!size || size > 1024 * 1024 * 1024) throw new Error("The imported video must be smaller than 1 GB.");
+
+  const printed = result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const title = sanitizeYouTubeTitle(printed.find((line) => !path.isAbsolute(line)) || "YouTube video");
+  job.filePath = downloaded;
+  job.mimeType = mimeTypeFor(downloaded);
+  job.originalName = `${title}${path.extname(downloaded).toLowerCase() || ".mp4"}`;
+  job.sourceReady = true;
+  Object.assign(job, { status: "queued", progress: 48, stage: "Source MP4 ready · waiting for the klip processor" });
+  persistJob(job);
+  enqueueProject(job);
+}
+
+function runYouTubeDownload(command, args, job) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let lastSavedProgress = 0;
+    child.stdout.on("data", (chunk) => { stdout = (stdout + chunk).slice(-12000); });
+    child.stderr.on("data", (chunk) => {
+      const text = String(chunk);
+      stderr = (stderr + text).slice(-12000);
+      const match = text.match(/\[download\]\s+([\d.]+)%/);
+      if (!match) return;
+      const percent = Math.max(0, Math.min(100, Number(match[1]) || 0));
+      const progress = 5 + Math.round(percent * 0.4);
+      if (progress < lastSavedProgress + 3) return;
+      lastSavedProgress = progress;
+      job.progress = progress;
+      job.stage = `Downloading your source MP4 · ${Math.round(percent)}%`;
+      persistJob(job);
+    });
+    child.on("error", reject);
+    child.on("close", (code) => code === 0
+      ? resolve({ stdout, stderr })
+      : reject(new Error(`yt-dlp exited ${code}: ${stderr}`)));
+  });
+}
+
+function removeYouTubeWorkingFiles(jobId) {
+  for (const name of fs.readdirSync(uploadDir)) {
+    if (name.startsWith(`${jobId}.`)) removeLocalFile(path.join(uploadDir, name), uploadDir);
+  }
+}
+
+function friendlyYouTubeError(error) {
+  const message = String(error?.message || "");
+  if (error?.code === "ENOENT") return "The YouTube importer is not installed on this server yet.";
+  if (/private video|members-only|age.?restricted|sign in|cookies|not available|unavailable/i.test(message)) {
+    return "YouTube would not release this source. Private, protected, age-restricted, or account-only videos must be downloaded from YouTube Studio first.";
+  }
+  if (/larger than|filesize|max-filesize|duration|live/i.test(message)) {
+    return "This source is too large, longer than four hours, or is a live stream. Use a finished video under 1 GB.";
+  }
+  return "KlipPharma could not import that YouTube video. Confirm it is your public or unlisted upload, or download it from YouTube Studio first.";
+}
+
 async function ensureLocalSource(job) {
   if (job.filePath && fs.existsSync(job.filePath) && fs.statSync(job.filePath).size > 0) return job.filePath;
   if (!job.objectKey) throw new Error("The original source file is no longer available. Upload it again to continue.");
@@ -621,10 +796,19 @@ async function processProject(job) {
   persistJob(job);
   const transcription = await transcribeAudio(job, audioPath);
   job.progress = 55;
+  job.detectedLanguage = normalizeDetectedLanguage(transcription.language || job.sourceLanguage);
+  job.originalTranscript = transcription.text;
+  job.originalSegments = normalizeSegments(transcription);
+  job.transcript = job.originalTranscript;
+  job.segments = job.originalSegments;
+  if (job.translationLanguage !== "original") {
+    job.stage = `Translating captions into ${languageLabel(job.translationLanguage)}`;
+    persistJob(job);
+    job.segments = await translateSegments(job.originalSegments, job.translationLanguage);
+    job.transcript = job.segments.map((segment) => segment.text).join(" ").trim();
+  }
   job.stage = "Ranking hooks, context, and payoff";
   persistJob(job);
-  job.transcript = transcription.text;
-  job.segments = normalizeSegments(transcription);
   job.duration = Math.max(job.duration, Math.ceil(job.segments.at(-1)?.end || 0));
   const clips = await chooseClips(job);
   job.clips = clips.map((clip, index) => ({
@@ -661,19 +845,22 @@ async function transcribeAudio(job, audioPath) {
     chunkNames.forEach((name, index) => files.push({ path: path.join(uploadDir, name), offset: index * 1800 }));
   }
 
-  const combined = { text: "", segments: [] };
+  const combined = { text: "", segments: [], language: job.sourceLanguage === "auto" ? "" : job.sourceLanguage };
   for (let index = 0; index < files.length; index += 1) {
     job.stage = files.length > 1
       ? `Transcribing section ${index + 1} of ${files.length}`
       : "Transcribing every word and timestamp";
     job.progress = 28 + Math.round(((index + 1) / files.length) * 24);
     persistJob(job);
-    const part = await openai.audio.transcriptions.create({
+    const request = {
       file: fs.createReadStream(files[index].path),
       model: process.env.AI_TRANSCRIPTION_MODEL || "whisper-1",
       response_format: "verbose_json",
       timestamp_granularities: ["segment"],
-    });
+    };
+    if (job.sourceLanguage !== "auto") request.language = job.sourceLanguage;
+    const part = await openai.audio.transcriptions.create(request);
+    if (!combined.language && part.language) combined.language = String(part.language).toLowerCase();
     combined.text = `${combined.text} ${part.text || ""}`.trim();
     for (const segment of part.segments || []) {
       combined.segments.push({
@@ -684,6 +871,40 @@ async function transcribeAudio(job, audioPath) {
     }
   }
   return combined;
+}
+
+async function translateSegments(segments, targetLanguage) {
+  const translated = [];
+  const targetLabel = languageLabel(targetLanguage);
+  for (let offset = 0; offset < segments.length; offset += 60) {
+    const chunk = segments.slice(offset, offset + 60);
+    const response = await openai.chat.completions.create({
+      model: process.env.AI_TEXT_MODEL || "gpt-4o-mini",
+      temperature: 0.1,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: `You are a professional subtitle translator. Translate spoken-video captions into ${targetLabel}. Preserve meaning, names, tone, slang, and sentence fragments. Do not add commentary. Return strict JSON with a translations array containing index and text.`,
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            targetLanguage: targetLabel,
+            captions: chunk.map((segment, index) => ({ index, text: segment.text })),
+          }),
+        },
+      ],
+    });
+    const parsed = JSON.parse(response.choices[0].message.content || "{}");
+    const byIndex = new Map((parsed.translations || []).map((item) => [Number(item.index), String(item.text || "").trim()]));
+    chunk.forEach((segment, index) => translated.push({
+      ...segment,
+      text: byIndex.get(index) || segment.text,
+      originalText: segment.text,
+    }));
+  }
+  return translated;
 }
 
 function normalizeSegments(transcription) {
@@ -767,21 +988,54 @@ async function renderClip(job, clip, planTier = job.planTier) {
       prefix: "clip",
     });
     const audioBitrate = job.contentType === "artist" ? "256k" : "160k";
-    await run(ffmpegPath || "ffmpeg", [
-      "-y", "-fflags", "+genpts", "-ss", String(clip.start), "-i", job.filePath,
-      "-t", String(clip.end - clip.start),
-      "-map", "0:v:0", "-map", "0:a:0?", "-vf", filter,
-      ...quickTimeVideoArgs("23"),
-      ...quickTimeAudioArgs(audioBitrate),
-      "-sn", "-dn", "-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "2048",
-      "-movflags", "+faststart", outputPath,
-    ]);
+    const duration = clip.end - clip.start;
+    const voiceText = customCaptionText || relevant.map((segment) => segment.text).join(" ").trim();
+    const dubPath = job.audioTranslation === "dubbed" && job.translationLanguage !== "original" && voiceText
+      ? await synthesizeTranslatedVoice(voiceText, job.dubVoice, tempDir, "voiceover")
+      : null;
+    if (dubPath) {
+      const hasSourceAudio = await probeHasAudio(ffmpegPath || "ffmpeg", job.filePath);
+      const audioFilter = hasSourceAudio
+        ? `[0:a]volume=0.16[bed];[1:a]volume=1,apad,atrim=0:${duration}[voice];[bed][voice]amix=inputs=2:duration=first:normalize=0[a]`
+        : `[1:a]volume=1,apad,atrim=0:${duration}[a]`;
+      await run(ffmpegPath || "ffmpeg", [
+        "-y", "-fflags", "+genpts", "-ss", String(clip.start), "-i", job.filePath, "-i", dubPath,
+        "-t", String(duration), "-filter_complex", audioFilter,
+        "-map", "0:v:0", "-map", "[a]", "-vf", filter,
+        ...quickTimeVideoArgs("23"), ...quickTimeAudioArgs(audioBitrate),
+        "-sn", "-dn", "-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "2048",
+        "-movflags", "+faststart", outputPath,
+      ]);
+    } else {
+      await run(ffmpegPath || "ffmpeg", [
+        "-y", "-fflags", "+genpts", "-ss", String(clip.start), "-i", job.filePath,
+        "-t", String(duration),
+        "-map", "0:v:0", "-map", "0:a:0?", "-vf", filter,
+        ...quickTimeVideoArgs("23"),
+        ...quickTimeAudioArgs(audioBitrate),
+        "-sn", "-dn", "-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "2048",
+        "-movflags", "+faststart", outputPath,
+      ]);
+    }
     clip.renderStatus = "ready";
     clip.downloadUrl = `/exports/${outputName}`;
     persistJob(job);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
+}
+
+async function synthesizeTranslatedVoice(text, voice, destinationDir, prefix) {
+  const speech = await openai.audio.speech.create({
+    model: process.env.AI_SPEECH_MODEL || "gpt-4o-mini-tts",
+    voice: normalizeDubVoice(voice),
+    input: String(text).trim().slice(0, 4096),
+    response_format: "mp3",
+    instructions: "Speak naturally in the language provided. Preserve the creator's energy and meaning. Do not add words.",
+  });
+  const destination = path.join(destinationDir, `${prefix}-${crypto.randomUUID()}.mp3`);
+  fs.writeFileSync(destination, Buffer.from(await speech.arrayBuffer()));
+  return destination;
 }
 
 function captionCuesFromText(text, duration) {
@@ -1172,7 +1426,24 @@ async function renderBatchMontage(group, owner, editedSegments = null, planTier 
         prefix: `automix-${String(index).padStart(3, "0")}`,
       });
       const hasAudio = await probeHasAudio(command, segment.job.filePath);
-      const args = hasAudio
+      const dubPath = segment.job.audioTranslation === "dubbed"
+        && segment.job.translationLanguage !== "original"
+        && segment.captionText
+        ? await synthesizeTranslatedVoice(segment.captionText, segment.job.dubVoice, tempDir, `automix-voice-${index}`)
+        : null;
+      const args = dubPath
+        ? [
+          "-y", "-fflags", "+genpts", "-ss", String(segment.start), "-i", segment.job.filePath, "-i", dubPath,
+          "-t", String(segment.duration),
+          "-filter_complex", hasAudio
+            ? `[0:a]volume=0.16[bed];[1:a]volume=1,apad,atrim=0:${segment.duration}[voice];[bed][voice]amix=inputs=2:duration=first:normalize=0[a]`
+            : `[1:a]volume=1,apad,atrim=0:${segment.duration}[a]`,
+          "-map", "0:v:0", "-map", "[a]", "-vf", filter,
+          ...quickTimeVideoArgs("23"), ...quickTimeAudioArgs("160k"),
+          "-sn", "-dn", "-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "2048",
+          "-movflags", "+faststart", piecePath,
+        ]
+        : hasAudio
         ? [
           "-y", "-fflags", "+genpts", "-ss", String(segment.start), "-i", segment.job.filePath, "-t", String(segment.duration),
           "-map", "0:v:0", "-map", "0:a:0?", "-vf", filter,
@@ -1328,6 +1599,34 @@ function montageCaptionText(job, start, end) {
     .filter(Boolean)
     .join(" ")
     .slice(0, 1000);
+}
+
+function normalizeSourceLanguage(value) {
+  const key = String(value || "auto").trim().toLowerCase();
+  return supportedLanguages[key] ? key : "auto";
+}
+
+function normalizeTranslationLanguage(value) {
+  const key = String(value || "original").trim().toLowerCase();
+  return key === "original" || (key !== "auto" && supportedLanguages[key]) ? key : "original";
+}
+
+function normalizeAudioTranslation(value, translationLanguage = "original") {
+  return value === "dubbed" && normalizeTranslationLanguage(translationLanguage) !== "original" ? "dubbed" : "original";
+}
+
+function normalizeDubVoice(value) {
+  const voice = String(value || "alloy").trim().toLowerCase();
+  return supportedDubVoices.has(voice) ? voice : "alloy";
+}
+
+function normalizeDetectedLanguage(value) {
+  const language = String(value || "auto").trim().toLowerCase();
+  return supportedLanguages[language] ? language : language.slice(0, 40) || "auto";
+}
+
+function languageLabel(value) {
+  return supportedLanguages[value]?.label || String(value || "Original");
 }
 
 function selectMontageSegments(group, targetDuration, style) {

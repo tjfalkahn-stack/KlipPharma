@@ -8,12 +8,21 @@ const authError = $("#authError");
 const accountMenu = $("#accountMenu");
 const videoInput = $("#video");
 const dropzone = $("#dropzone");
+const youtubeUrl = $("#youtubeUrl");
+const youtubeMode = $("#youtubeMode");
+const youtubeOwnership = $("#youtubeOwnership");
+const youtubeImportButton = $("#youtubeImportButton");
+const youtubeImportStatus = $("#youtubeImportStatus");
 const uploadView = $("#uploadView");
 const processingView = $("#processingView");
 const resultsView = $("#resultsView");
 const autoMixBuilder = $("#autoMixBuilder");
 const autoMixToggle = $("#createMontage");
 const deleteBatchButton = $("#deleteBatch");
+const translationLanguage = $("#translationLanguage");
+const audioTranslation = $("#audioTranslation");
+const dubVoice = $("#dubVoice");
+const audioTranslationHelp = $("#audioTranslationHelp");
 let selectedFiles = [];
 const fileModes = new Map();
 let currentProjects = [];
@@ -29,6 +38,10 @@ const creatorModeCopy = {
   artist: ["Artist / Music", "Protects complete lyrical phrases, favors memorable song and artist-story moments, and renders final audio at a higher bitrate."],
   podcast: ["Podcast / Interview", "Keeps essential questions and answers together while finding insights, debates, stories, humor, and reactions."],
   monologue: ["Monologue / Talking Head", "Cuts slow introductions and prioritizes cold opens, lessons, hot takes, personal stories, and direct calls to action."],
+};
+const languageNames = {
+  en: "English", es: "Spanish", fr: "French", pt: "Portuguese", de: "German", it: "Italian",
+  ja: "Japanese", ko: "Korean", zh: "Chinese", ar: "Arabic", hi: "Hindi",
 };
 
 function isPaidPlan(user = currentUser) {
@@ -51,6 +64,21 @@ function paintBrandPolicy(root = document) {
 
 autoMixToggle.addEventListener("change", paintAutoMixControls);
 paintAutoMixControls();
+translationLanguage.addEventListener("change", paintLanguageControls);
+audioTranslation.addEventListener("change", paintLanguageControls);
+paintLanguageControls();
+
+function paintLanguageControls() {
+  const hasTranslation = translationLanguage.value !== "original";
+  audioTranslation.querySelector('option[value="dubbed"]').disabled = !hasTranslation;
+  if (!hasTranslation) audioTranslation.value = "original";
+  dubVoice.disabled = audioTranslation.value !== "dubbed";
+  audioTranslationHelp.textContent = hasTranslation
+    ? audioTranslation.value === "dubbed"
+      ? "AI voiceover will use the translated caption language."
+      : "Original source audio will be preserved."
+    : "Choose a translation language to enable dubbing.";
+}
 
 videoInput.addEventListener("change", () => {
   const result = addSelectedFiles([...videoInput.files]);
@@ -81,6 +109,49 @@ dropzone.addEventListener("drop", (event) => {
   if (result.limitReached) toast("KlipPharma holds up to 10 files in one batch.");
   else if (result.added) toast(`${result.added} ${result.added === 1 ? "video" : "videos"} added. ${selectedFiles.length} total.`);
   else toast("That video is already in this batch.");
+});
+
+youtubeImportButton.addEventListener("click", async () => {
+  const url = youtubeUrl.value.trim();
+  if (!url) return toast("Paste your YouTube video link first.");
+  if (!youtubeOwnership.checked) return toast("Confirm that you own the video or have permission to use it.");
+
+  youtubeImportButton.disabled = true;
+  youtubeImportButton.textContent = "Starting secure import…";
+  youtubeImportStatus.classList.remove("hidden");
+  youtubeImportStatus.textContent = "Connecting to YouTube. You can download the source MP4 as soon as it is ready.";
+  try {
+    const settings = new FormData(form);
+    const response = await fetch("/api/youtube/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url,
+        ownershipConfirmed: true,
+        transcribe: youtubeMode.value !== "manual",
+        audience: settings.get("audience"),
+        goal: settings.get("goal"),
+        platform: settings.get("platform"),
+        contentType: settings.get("contentType"),
+        clipLength: settings.get("clipLength"),
+        watermarkText: settings.get("watermarkText"),
+        watermarkPosition: settings.get("watermarkPosition"),
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "The YouTube import could not start.");
+    currentProjects = [data.id];
+    youtubeUrl.value = "";
+    youtubeOwnership.checked = false;
+    setView("processing");
+    await pollProjects();
+  } catch (error) {
+    youtubeImportStatus.textContent = error.message || "The YouTube import could not start.";
+    toast(youtubeImportStatus.textContent);
+  } finally {
+    youtubeImportButton.disabled = false;
+    youtubeImportButton.innerHTML = "Import my YouTube video <b>→</b>";
+  }
 });
 
 form.addEventListener("submit", async (event) => {
@@ -146,6 +217,10 @@ async function uploadBatchDirectly(formData, fileOptions) {
     montageStyle: formData.get("montageStyle"),
     watermarkText: formData.get("watermarkText"),
     watermarkPosition: formData.get("watermarkPosition"),
+    sourceLanguage: formData.get("sourceLanguage"),
+    translationLanguage: formData.get("translationLanguage"),
+    audioTranslation: formData.get("audioTranslation"),
+    dubVoice: formData.get("dubVoice"),
   };
   return fetch("/api/projects/cloud", {
     method: "POST",
@@ -219,6 +294,14 @@ function renderBatchStatus(projects) {
           ? "Queued"
           : `${project.progress || 0}% · ${project.stage}`;
     row.append(name, detail);
+    if (project.sourceReady && project.sourceUrl) {
+      const download = document.createElement("a");
+      download.className = "batch-source-download";
+      download.href = `${project.sourceUrl}?download=1`;
+      download.download = "";
+      download.textContent = "Download source MP4";
+      row.append(download);
+    }
     statusBox.append(row);
   });
 }
@@ -234,6 +317,11 @@ function renderResults(projects) {
     section.querySelector(".source-number").textContent = `SOURCE ${index + 1} OF ${projects.length}`;
     section.querySelector(".source-name").textContent = project.originalName;
     section.querySelector(".source-count").textContent = `${project.clips.length} ${project.clips.length === 1 ? "KLIP" : "KLIPS"}`;
+    const sourceDownload = section.querySelector(".source-download");
+    if (project.sourceUrl) {
+      sourceDownload.href = `${project.sourceUrl}?download=1`;
+      sourceDownload.classList.remove("hidden");
+    }
     section.querySelector(".delete-source").addEventListener("click", (event) => deleteSourceProject(project, event.currentTarget));
     const grid = section.querySelector(".project-clip-grid");
     renderProjectClips(project, grid);
@@ -726,6 +814,14 @@ function renderProjectClips(project, grid) {
       : Number.isFinite(recipeLength)
         ? `AUTO-KLIP · MAX ${clock(recipeLength)}`
         : "AUTO-KLIP · SMART";
+    if (!clip.manual && project.translationLanguage && project.translationLanguage !== "original") {
+      const languageBadge = document.createElement("span");
+      languageBadge.className = "translation-language";
+      languageBadge.textContent = project.audioTranslation === "dubbed"
+        ? `${languageNames[project.translationLanguage] || project.translationLanguage} · DUBBED`
+        : `${languageNames[project.translationLanguage] || project.translationLanguage} · CAPTIONS`;
+      node.querySelector(".meta").append(languageBadge);
+    }
     node.querySelector("h3").textContent = clip.title;
     node.querySelector("blockquote").textContent = `“${clip.hook || clip.caption}”`;
     node.querySelector(".why").textContent = clip.whyChosen;

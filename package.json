@@ -1,12 +1,13 @@
 {
   "name": "klippharma",
-  "version": "0.18.1",
+  "version": "0.20.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "node --env-file=.env.local --watch server.js",
     "start": "node server.js",
-    "check": "node --check server.js && node --check public/app.js && node --check lib/database.js && node --check lib/object-storage.js"
+    "check": "node --check server.js && node --check public/app.js && node --check lib/database.js && node --check lib/object-storage.js && node --check lib/youtube.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1092.0",

@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=0.18.0" />
+  <link rel="stylesheet" href="/styles.css?v=0.20.0" />
 </head>
 <body>
   <header class="topbar">
@@ -71,22 +71,51 @@
           <div><span>STEP 2 · SOURCE VIDEOS</span><h2>Load your footage</h2></div>
           <p>Add one video or build a batch of up to 10.</p>
         </div>
-        <label class="dropzone" id="dropzone">
-          <input id="video" name="videos" type="file" accept="video/*,audio/*" multiple required />
-          <span class="upload-icon">↑</span>
-          <strong id="fileLabel">Drop your long-form videos here</strong>
-          <small>Choose up to 10 files · click or drop again to keep adding</small>
-        </label>
-        <div class="file-selection hidden" id="fileSelection"></div>
-        <p class="mode-help">For each video, choose <strong>AI + captions</strong> or <strong>Manual · no transcript</strong>. Manual mode skips transcription charges and opens the cutter directly.</p>
+        <div class="source-methods">
+          <div>
+            <label class="dropzone" id="dropzone">
+              <input id="video" name="videos" type="file" accept="video/*,audio/*" multiple />
+              <span class="upload-icon">↑</span>
+              <strong id="fileLabel">Drop your long-form videos here</strong>
+              <small>Choose up to 10 files · click or drop again to keep adding</small>
+            </label>
+            <div class="file-selection hidden" id="fileSelection"></div>
+            <p class="mode-help">For each video, choose <strong>AI + captions</strong> or <strong>Manual · no transcript</strong>. Manual mode skips transcription charges and opens the cutter directly.</p>
+          </div>
+          <section class="youtube-import" aria-labelledby="youtubeImportTitle">
+            <div class="youtube-import-head">
+              <span class="youtube-badge">YOUTUBE</span>
+              <div><h3 id="youtubeImportTitle">Bring in your own upload</h3><p>Paste one public or unlisted YouTube link. KlipPharma downloads the source MP4, then makes it available to save or klip.</p></div>
+            </div>
+            <label class="youtube-url-field"><span>YOUR VIDEO LINK</span><input id="youtubeUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://www.youtube.com/watch?v=..." /></label>
+            <label class="youtube-mode-field"><span>AFTER IMPORT</span><select id="youtubeMode"><option value="ai">Find AI klips + captions</option><option value="manual">Open manual cutter · no transcript</option></select></label>
+            <label class="youtube-ownership"><input id="youtubeOwnership" type="checkbox" /><span>I confirm that I own this video or have permission to download and edit it.</span></label>
+            <button class="youtube-import-button" id="youtubeImportButton" type="button">Import my YouTube video <b>→</b></button>
+            <p class="youtube-status hidden" id="youtubeImportStatus" role="status"></p>
+            <p class="youtube-limit">Public and unlisted videos only · no playlists, live streams, private, paid, age-restricted, or protected videos. For restricted uploads, use <a href="https://studio.youtube.com" target="_blank" rel="noreferrer">YouTube Studio</a>.</p>
+          </section>
+        </div>
         <div class="settings-grid">
           <label><span>Target audience</span><input name="audience" placeholder="e.g. Streetwear founders" /></label>
           <label><span>Content goal</span><select name="goal"><option>High-retention social clips</option><option>Educational insights</option><option>Emotional storytelling</option><option>Controversial conversation</option><option>Product promotion</option></select></label>
           <label><span>Primary platform</span><select name="platform"><option>Instagram Reels</option><option>TikTok</option><option>YouTube Shorts</option><option>LinkedIn</option><option>X</option></select></label>
         </div>
+        <section class="language-studio">
+          <div class="step-heading">
+            <div><span>STEP 3 · LANGUAGE STUDIO</span><h2>Transcribe, translate &amp; dub</h2></div>
+            <p>Keep the original language or create translated captions and an AI voiceover.</p>
+          </div>
+          <div class="language-grid">
+            <label><span>SPOKEN LANGUAGE</span><select name="sourceLanguage" id="sourceLanguage"><option value="auto">Auto detect</option><option value="en">English</option><option value="es">Spanish</option><option value="fr">French</option><option value="pt">Portuguese</option><option value="de">German</option><option value="it">Italian</option><option value="ja">Japanese</option><option value="ko">Korean</option><option value="zh">Chinese</option><option value="ar">Arabic</option><option value="hi">Hindi</option></select><small>Auto detect works for mixed batches.</small></label>
+            <label><span>CAPTION / TRANSLATION LANGUAGE</span><select name="translationLanguage" id="translationLanguage"><option value="original">Original language</option><option value="en">English</option><option value="es">Spanish</option><option value="fr">French</option><option value="pt">Portuguese</option><option value="de">German</option><option value="it">Italian</option><option value="ja">Japanese</option><option value="ko">Korean</option><option value="zh">Chinese</option><option value="ar">Arabic</option><option value="hi">Hindi</option></select><small>Translated words remain editable before rendering.</small></label>
+            <label><span>AUDIO LANGUAGE</span><select name="audioTranslation" id="audioTranslation"><option value="original">Keep original audio</option><option value="dubbed">AI translated voiceover</option></select><small id="audioTranslationHelp">Choose a translation language to enable dubbing.</small></label>
+            <label><span>VOICE</span><select name="dubVoice" id="dubVoice"><option value="alloy">Alloy · Balanced</option><option value="coral">Coral · Warm</option><option value="nova">Nova · Bright</option><option value="onyx">Onyx · Deep</option><option value="sage">Sage · Calm</option><option value="shimmer">Shimmer · Clear</option></select><small>Original sound stays quietly underneath the translated voice.</small></label>
+          </div>
+          <div class="language-note"><b>How it works</b><span>KlipPharma saves the original transcript, translates timestamped captions, and uses the translated words for optional voiceover. Manual · no transcript videos skip this step.</span></div>
+        </section>
         <section class="batch-recipe">
           <div class="step-heading recipe-heading">
-            <div><span>STEP 3 · INDIVIDUAL AI KLIPS</span><h2>Choose each klip’s starting length</h2></div>
+            <div><span>STEP 4 · INDIVIDUAL AI KLIPS</span><h2>Choose each klip’s starting length</h2></div>
             <p>Opus-style recommendations from every source. Every cut remains editable up to 1:30.</p>
           </div>
           <div class="length-grid" aria-label="AI starting clip length">
@@ -111,7 +140,7 @@
           <label class="automix-toggle">
             <input type="checkbox" name="createMontage" value="true" id="createMontage" />
             <span class="toggle-track"><i></i></span>
-            <span class="automix-copy"><small>STEP 4 · CAPCUT-STYLE BATCH EDIT</small><strong>Create one Auto-Mix from all videos</strong><em>KlipPharma will select, cut, sequence, and combine moments from the entire batch into one vertical video.</em></span>
+            <span class="automix-copy"><small>STEP 5 · CAPCUT-STYLE BATCH EDIT</small><strong>Create one Auto-Mix from all videos</strong><em>KlipPharma will select, cut, sequence, and combine moments from the entire batch into one vertical video.</em></span>
             <b class="automix-badge">ADD OUTPUT</b>
           </label>
           <div class="automix-controls">
@@ -159,7 +188,7 @@
     <section class="project-result">
       <div class="source-head">
         <div><span class="source-number"></span><h3 class="source-name"></h3></div>
-        <div class="source-actions"><span class="source-count"></span><button class="delete-source" type="button">Delete video</button></div>
+        <div class="source-actions"><span class="source-count"></span><a class="source-download hidden" download>Download source MP4</a><button class="delete-source" type="button">Delete video</button></div>
       </div>
       <div class="project-clip-grid"></div>
     </section>
@@ -254,6 +283,6 @@
   </template>
 
   <div class="toast hidden" id="toast"></div>
-  <script src="/app.js?v=0.18.0" type="module"></script>
+  <script src="/app.js?v=0.20.0" type="module"></script>
 </body>
 </html>

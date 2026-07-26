@@ -8,11 +8,6 @@ const authError = $("#authError");
 const accountMenu = $("#accountMenu");
 const videoInput = $("#video");
 const dropzone = $("#dropzone");
-const youtubeUrl = $("#youtubeUrl");
-const youtubeMode = $("#youtubeMode");
-const youtubeOwnership = $("#youtubeOwnership");
-const youtubeImportButton = $("#youtubeImportButton");
-const youtubeImportStatus = $("#youtubeImportStatus");
 const uploadView = $("#uploadView");
 const processingView = $("#processingView");
 const resultsView = $("#resultsView");
@@ -109,49 +104,6 @@ dropzone.addEventListener("drop", (event) => {
   if (result.limitReached) toast("KlipPharma holds up to 10 files in one batch.");
   else if (result.added) toast(`${result.added} ${result.added === 1 ? "video" : "videos"} added. ${selectedFiles.length} total.`);
   else toast("That video is already in this batch.");
-});
-
-youtubeImportButton.addEventListener("click", async () => {
-  const url = youtubeUrl.value.trim();
-  if (!url) return toast("Paste your YouTube video link first.");
-  if (!youtubeOwnership.checked) return toast("Confirm that you own the video or have permission to use it.");
-
-  youtubeImportButton.disabled = true;
-  youtubeImportButton.textContent = "Starting secure import…";
-  youtubeImportStatus.classList.remove("hidden");
-  youtubeImportStatus.textContent = "Connecting to YouTube. You can download the source MP4 as soon as it is ready.";
-  try {
-    const settings = new FormData(form);
-    const response = await fetch("/api/youtube/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        url,
-        ownershipConfirmed: true,
-        transcribe: youtubeMode.value !== "manual",
-        audience: settings.get("audience"),
-        goal: settings.get("goal"),
-        platform: settings.get("platform"),
-        contentType: settings.get("contentType"),
-        clipLength: settings.get("clipLength"),
-        watermarkText: settings.get("watermarkText"),
-        watermarkPosition: settings.get("watermarkPosition"),
-      }),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "The YouTube import could not start.");
-    currentProjects = [data.id];
-    youtubeUrl.value = "";
-    youtubeOwnership.checked = false;
-    setView("processing");
-    await pollProjects();
-  } catch (error) {
-    youtubeImportStatus.textContent = error.message || "The YouTube import could not start.";
-    toast(youtubeImportStatus.textContent);
-  } finally {
-    youtubeImportButton.disabled = false;
-    youtubeImportButton.innerHTML = "Import my YouTube video <b>→</b>";
-  }
 });
 
 form.addEventListener("submit", async (event) => {
@@ -294,14 +246,6 @@ function renderBatchStatus(projects) {
           ? "Queued"
           : `${project.progress || 0}% · ${project.stage}`;
     row.append(name, detail);
-    if (project.sourceReady && project.sourceUrl) {
-      const download = document.createElement("a");
-      download.className = "batch-source-download";
-      download.href = `${project.sourceUrl}?download=1`;
-      download.download = "";
-      download.textContent = "Download source MP4";
-      row.append(download);
-    }
     statusBox.append(row);
   });
 }
@@ -317,11 +261,6 @@ function renderResults(projects) {
     section.querySelector(".source-number").textContent = `SOURCE ${index + 1} OF ${projects.length}`;
     section.querySelector(".source-name").textContent = project.originalName;
     section.querySelector(".source-count").textContent = `${project.clips.length} ${project.clips.length === 1 ? "KLIP" : "KLIPS"}`;
-    const sourceDownload = section.querySelector(".source-download");
-    if (project.sourceUrl) {
-      sourceDownload.href = `${project.sourceUrl}?download=1`;
-      sourceDownload.classList.remove("hidden");
-    }
     section.querySelector(".delete-source").addEventListener("click", (event) => deleteSourceProject(project, event.currentTarget));
     const grid = section.querySelector(".project-clip-grid");
     renderProjectClips(project, grid);
@@ -1144,6 +1083,25 @@ function installTrimmer(project, clip, card) {
   const captionPosition = card.querySelector(".caption-position");
   const watermarkText = card.querySelector(".watermark-text");
   const watermarkPosition = card.querySelector(".watermark-position");
+  const memeStudio = card.querySelector("[data-meme-studio]");
+  const memeProLock = card.querySelector("[data-meme-pro-lock]");
+  const memeEnabled = card.querySelector(".meme-enabled");
+  const memeHeadline = card.querySelector(".meme-headline");
+  const memeTemplate = card.querySelector(".meme-template");
+  const memePosition = card.querySelector(".meme-position");
+  const memeFontSize = card.querySelector(".meme-font-size");
+  const memeTextColor = card.querySelector(".meme-text-color");
+  const memeBackground = card.querySelector(".meme-background");
+  const memeImageInput = card.querySelector(".meme-image-input");
+  const memeImageName = card.querySelector(".meme-image-name");
+  const memeImageRemove = card.querySelector(".meme-image-remove");
+  const memeStart = card.querySelector(".meme-start");
+  const memeEnd = card.querySelector(".meme-end");
+  const memeStartLabel = card.querySelector(".meme-start-label");
+  const memeEndLabel = card.querySelector(".meme-end-label");
+  const memePreviewLayer = card.querySelector(".meme-preview-layer");
+  const memePreviewImage = card.querySelector(".meme-preview-image");
+  const memePreviewHeadline = card.querySelector(".meme-preview-headline");
   const focusInput = card.querySelector(".focus-x");
   const focusLabel = card.querySelector(".focus-label");
   const focusPresets = [...card.querySelectorAll(".focus-presets button")];
@@ -1165,6 +1123,16 @@ function installTrimmer(project, clip, card) {
     watermarkText: clip.watermarkText ?? project.watermarkText ?? "",
     watermarkPosition: clip.watermarkPosition || project.watermarkPosition || "top-right",
     focusX: Number.isFinite(Number(clip.focusX)) ? Number(clip.focusX) : 50,
+    memeEnabled: isPaidPlan() && clip.memeEnabled === true,
+    memeHeadline: String(clip.memeHeadline || ""),
+    memeTemplate: clip.memeTemplate || "headline",
+    memePosition: clip.memePosition || "middle",
+    memeFontSize: clip.memeFontSize || "medium",
+    memeTextColor: clip.memeTextColor || "white",
+    memeBackground: clip.memeBackground || "solid",
+    memeStart: Number.isFinite(Number(clip.memeStart)) ? Number(clip.memeStart) : 0,
+    memeEnd: Number.isFinite(Number(clip.memeEnd)) ? Number(clip.memeEnd) : Math.max(1, original.end - original.start),
+    memeImageUrl: clip.memeImageUrl || "",
   };
   const mediaDuration = Math.max(Number(project.duration) || state.end, state.end);
   const signature = () => JSON.stringify(state);
@@ -1182,6 +1150,22 @@ function installTrimmer(project, clip, card) {
   watermarkText.value = state.watermarkText;
   watermarkPosition.value = state.watermarkPosition;
   focusInput.value = String(state.focusX);
+  const proEnabled = isPaidPlan();
+  memeStudio.classList.toggle("pro-active", proEnabled);
+  memeProLock.classList.toggle("hidden", proEnabled);
+  memeStudio.querySelector("[data-pro-badge]").textContent = proEnabled ? "PRO ACTIVE" : "PRO";
+  memeStudio.querySelectorAll(".meme-studio-controls input,.meme-studio-controls select,.meme-studio-controls textarea,.meme-toggle input").forEach((control) => {
+    control.disabled = !proEnabled;
+  });
+  memeEnabled.checked = state.memeEnabled;
+  memeHeadline.value = state.memeHeadline;
+  memeTemplate.value = state.memeTemplate;
+  memePosition.value = state.memePosition;
+  memeFontSize.value = state.memeFontSize;
+  memeTextColor.value = state.memeTextColor;
+  memeBackground.value = state.memeBackground;
+  memeImageName.textContent = state.memeImageUrl ? "Overlay image added" : "No image added";
+  memeImageRemove.classList.toggle("hidden", !state.memeImageUrl);
 
   function showPreviewMessage(message, detail, canRetry = true) {
     previewReady = false;
@@ -1205,6 +1189,35 @@ function installTrimmer(project, clip, card) {
     video.addEventListener("loadedmetadata", () => {
       if (Number.isFinite(state.start)) video.currentTime = state.start;
     }, { once: true });
+  }
+
+  function paintMemePreview(currentTime = state.start) {
+    const selectedDuration = Math.max(1, state.end - state.start);
+    state.memeStart = Math.max(0, Math.min(Number(state.memeStart) || 0, selectedDuration - 0.1));
+    state.memeEnd = Math.max(state.memeStart + 0.1, Math.min(Number(state.memeEnd) || selectedDuration, selectedDuration));
+    memeStart.max = String(selectedDuration);
+    memeEnd.max = String(selectedDuration);
+    memeStart.value = String(state.memeStart);
+    memeEnd.value = String(state.memeEnd);
+    memeStartLabel.textContent = preciseClock(state.memeStart);
+    memeEndLabel.textContent = preciseClock(state.memeEnd);
+    const relativeTime = Math.max(0, Number(currentTime) - state.start);
+    const visible = proEnabled && state.memeEnabled && relativeTime >= state.memeStart && relativeTime <= state.memeEnd;
+    memePreviewLayer.classList.toggle("hidden", !visible);
+    memePreviewLayer.className = `meme-preview-layer ${visible ? "" : "hidden"} ${state.memeTemplate}`.trim();
+    memePreviewHeadline.textContent = state.memeHeadline;
+    memePreviewHeadline.className = [
+      "meme-preview-headline",
+      state.memeHeadline ? "" : "hidden",
+      `position-${state.memePosition}`,
+      `size-${state.memeFontSize}`,
+      `color-${state.memeTextColor}`,
+      `bg-${state.memeBackground}`,
+    ].filter(Boolean).join(" ");
+    memePreviewImage.classList.toggle("hidden", !state.memeImageUrl);
+    if (state.memeImageUrl && memePreviewImage.src !== new URL(state.memeImageUrl, window.location.href).href) {
+      memePreviewImage.src = state.memeImageUrl;
+    }
   }
 
   async function recoverPreview() {
@@ -1253,6 +1266,7 @@ function installTrimmer(project, clip, card) {
     focusInput.value = String(state.focusX);
     focusLabel.textContent = state.focusX < 35 ? "Left" : state.focusX > 65 ? "Right" : "Center";
     focusPresets.forEach((button) => button.classList.toggle("active", Number(button.dataset.focus) === Number(state.focusX)));
+    paintMemePreview(video.currentTime || state.start);
     if (previewReady && Number.isFinite(seekTo)) {
       previewingSelection = false;
       video.pause();
@@ -1293,6 +1307,16 @@ function installTrimmer(project, clip, card) {
       watermarkText: state.watermarkText,
       watermarkPosition: state.watermarkPosition,
       focusX: state.focusX,
+      memeEnabled: state.memeEnabled,
+      memeHeadline: state.memeHeadline,
+      memeTemplate: state.memeTemplate,
+      memePosition: state.memePosition,
+      memeFontSize: state.memeFontSize,
+      memeTextColor: state.memeTextColor,
+      memeBackground: state.memeBackground,
+      memeStart: state.memeStart,
+      memeEnd: state.memeEnd,
+      memeImageUrl: state.memeImageUrl,
     });
     lastSaved = signature();
     overlaySaveState.textContent = "Saved";
@@ -1365,6 +1389,70 @@ function installTrimmer(project, clip, card) {
     markCutChanged();
     queueSave();
   });
+  [
+    [memeEnabled, "change", () => { state.memeEnabled = memeEnabled.checked; }],
+    [memeHeadline, "input", () => { state.memeHeadline = memeHeadline.value; }],
+    [memeTemplate, "change", () => { state.memeTemplate = memeTemplate.value; }],
+    [memePosition, "change", () => { state.memePosition = memePosition.value; }],
+    [memeFontSize, "change", () => { state.memeFontSize = memeFontSize.value; }],
+    [memeTextColor, "change", () => { state.memeTextColor = memeTextColor.value; }],
+    [memeBackground, "change", () => { state.memeBackground = memeBackground.value; }],
+    [memeStart, "input", () => {
+      state.memeStart = Number(memeStart.value);
+      if (state.memeStart >= state.memeEnd) state.memeEnd = Math.min(state.end - state.start, state.memeStart + 0.5);
+    }],
+    [memeEnd, "input", () => {
+      state.memeEnd = Number(memeEnd.value);
+      if (state.memeEnd <= state.memeStart) state.memeStart = Math.max(0, state.memeEnd - 0.5);
+    }],
+  ].forEach(([control, eventName, update]) => control.addEventListener(eventName, () => {
+    update();
+    markCutChanged();
+    paintMemePreview(video.currentTime || state.start);
+    queueSave();
+  }));
+
+  memeImageInput.addEventListener("change", async () => {
+    const image = memeImageInput.files?.[0];
+    if (!image) return;
+    if (!proEnabled) return toast("Meme & Overlay Studio is available on Pro.");
+    try {
+      await save();
+      const formData = new FormData();
+      formData.append("image", image);
+      memeImageName.textContent = "Uploading image…";
+      const response = await fetch(`/api/projects/${project.id}/clips/${clip.id}/overlay-image`, { method: "POST", body: formData });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not upload that overlay image.");
+      state.memeImageUrl = `${data.memeImageUrl}?v=${Date.now()}`;
+      clip.memeImageUrl = state.memeImageUrl;
+      memeImageName.textContent = image.name;
+      memeImageRemove.classList.remove("hidden");
+      memeImageInput.value = "";
+      lastSaved = signature();
+      markCutChanged();
+      paintMemePreview(video.currentTime || state.start);
+      toast("Overlay image added.");
+    } catch (error) {
+      memeImageName.textContent = state.memeImageUrl ? "Overlay image added" : "No image added";
+      toast(error.message || "Could not upload that overlay image.");
+    }
+  });
+
+  memeImageRemove.addEventListener("click", async () => {
+    if (!state.memeImageUrl) return;
+    const response = await fetch(`/api/projects/${project.id}/clips/${clip.id}/overlay-image`, { method: "DELETE" });
+    const data = await response.json();
+    if (!response.ok) return toast(data.error || "Could not remove that overlay image.");
+    state.memeImageUrl = "";
+    clip.memeImageUrl = "";
+    memePreviewImage.removeAttribute("src");
+    memeImageName.textContent = "No image added";
+    memeImageRemove.classList.add("hidden");
+    lastSaved = signature();
+    markCutChanged();
+    paintMemePreview(video.currentTime || state.start);
+  });
   focusInput.addEventListener("input", () => {
     state.focusX = Number(focusInput.value);
     markCutChanged();
@@ -1391,6 +1479,7 @@ function installTrimmer(project, clip, card) {
   });
 
   video.addEventListener("timeupdate", () => {
+    paintMemePreview(video.currentTime);
     if (previewingSelection && video.currentTime >= state.end) {
       video.pause();
       video.currentTime = state.start;

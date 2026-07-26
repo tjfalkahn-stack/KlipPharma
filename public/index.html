@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=0.20.0" />
+  <link rel="stylesheet" href="/styles.css?v=0.21.0" />
 </head>
 <body>
   <header class="topbar">
@@ -71,30 +71,14 @@
           <div><span>STEP 2 · SOURCE VIDEOS</span><h2>Load your footage</h2></div>
           <p>Add one video or build a batch of up to 10.</p>
         </div>
-        <div class="source-methods">
-          <div>
-            <label class="dropzone" id="dropzone">
-              <input id="video" name="videos" type="file" accept="video/*,audio/*" multiple />
-              <span class="upload-icon">↑</span>
-              <strong id="fileLabel">Drop your long-form videos here</strong>
-              <small>Choose up to 10 files · click or drop again to keep adding</small>
-            </label>
-            <div class="file-selection hidden" id="fileSelection"></div>
-            <p class="mode-help">For each video, choose <strong>AI + captions</strong> or <strong>Manual · no transcript</strong>. Manual mode skips transcription charges and opens the cutter directly.</p>
-          </div>
-          <section class="youtube-import" aria-labelledby="youtubeImportTitle">
-            <div class="youtube-import-head">
-              <span class="youtube-badge">YOUTUBE</span>
-              <div><h3 id="youtubeImportTitle">Bring in your own upload</h3><p>Paste one public or unlisted YouTube link. KlipPharma downloads the source MP4, then makes it available to save or klip.</p></div>
-            </div>
-            <label class="youtube-url-field"><span>YOUR VIDEO LINK</span><input id="youtubeUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://www.youtube.com/watch?v=..." /></label>
-            <label class="youtube-mode-field"><span>AFTER IMPORT</span><select id="youtubeMode"><option value="ai">Find AI klips + captions</option><option value="manual">Open manual cutter · no transcript</option></select></label>
-            <label class="youtube-ownership"><input id="youtubeOwnership" type="checkbox" /><span>I confirm that I own this video or have permission to download and edit it.</span></label>
-            <button class="youtube-import-button" id="youtubeImportButton" type="button">Import my YouTube video <b>→</b></button>
-            <p class="youtube-status hidden" id="youtubeImportStatus" role="status"></p>
-            <p class="youtube-limit">Public and unlisted videos only · no playlists, live streams, private, paid, age-restricted, or protected videos. For restricted uploads, use <a href="https://studio.youtube.com" target="_blank" rel="noreferrer">YouTube Studio</a>.</p>
-          </section>
-        </div>
+        <label class="dropzone" id="dropzone">
+          <input id="video" name="videos" type="file" accept="video/*,audio/*" multiple required />
+          <span class="upload-icon">↑</span>
+          <strong id="fileLabel">Drop your long-form videos here</strong>
+          <small>Choose up to 10 files · click or drop again to keep adding</small>
+        </label>
+        <div class="file-selection hidden" id="fileSelection"></div>
+        <p class="mode-help">For each video, choose <strong>AI + captions</strong> or <strong>Manual · no transcript</strong>. Manual mode skips transcription charges and opens the cutter directly.</p>
         <div class="settings-grid">
           <label><span>Target audience</span><input name="audience" placeholder="e.g. Streetwear founders" /></label>
           <label><span>Content goal</span><select name="goal"><option>High-retention social clips</option><option>Educational insights</option><option>Emotional storytelling</option><option>Controversial conversation</option><option>Product promotion</option></select></label>
@@ -188,7 +172,7 @@
     <section class="project-result">
       <div class="source-head">
         <div><span class="source-number"></span><h3 class="source-name"></h3></div>
-        <div class="source-actions"><span class="source-count"></span><a class="source-download hidden" download>Download source MP4</a><button class="delete-source" type="button">Delete video</button></div>
+        <div class="source-actions"><span class="source-count"></span><button class="delete-source" type="button">Delete video</button></div>
       </div>
       <div class="project-clip-grid"></div>
     </section>
@@ -205,11 +189,17 @@
         <p class="why"></p>
         <div class="clip-editor">
           <div class="preview-shell">
-            <video class="preview-video" controls preload="metadata" playsinline></video>
-            <div class="preview-placeholder hidden">
-              <strong class="preview-message">Preparing a browser-safe preview…</strong>
-              <span class="preview-detail">Your source video is still saved.</span>
-              <button class="retry-preview" type="button">Retry preview</button>
+            <div class="preview-canvas">
+              <video class="preview-video" controls preload="metadata" playsinline></video>
+              <div class="preview-placeholder hidden">
+                <strong class="preview-message">Preparing a browser-safe preview…</strong>
+                <span class="preview-detail">Your source video is still saved.</span>
+                <button class="retry-preview" type="button">Retry preview</button>
+              </div>
+              <div class="meme-preview-layer hidden" aria-hidden="true">
+                <img class="meme-preview-image hidden" alt="" />
+                <strong class="meme-preview-headline hidden"></strong>
+              </div>
             </div>
             <button class="preview-cut" type="button"><span>▶</span> Preview selected cut</button>
           </div>
@@ -258,6 +248,40 @@
               <label><span>CAPTION POSITION</span><select class="caption-position"><option value="bottom">Bottom</option><option value="middle">Middle</option><option value="top">Top</option></select></label>
             </div>
           </div>
+          <section class="meme-studio" data-meme-studio>
+            <div class="meme-studio-head">
+              <div>
+                <small>PRO CREATIVE TOOL</small>
+                <strong>Meme &amp; Overlay Studio</strong>
+                <p>Add a headline, reaction image, logo, or split-screen visual—then control exactly when it appears.</p>
+              </div>
+              <label class="caption-toggle meme-toggle"><input class="meme-enabled" type="checkbox" /><span></span><b>Enable</b></label>
+              <b class="pro-badge" data-pro-badge>PRO</b>
+            </div>
+            <div class="meme-studio-controls">
+              <label class="meme-copy-field"><span>HEADLINE / MEME WORDS</span><textarea class="meme-headline" rows="3" maxlength="240" placeholder="Type the words you want over the clip."></textarea></label>
+              <div class="meme-select-grid">
+                <label><span>LAYOUT</span><select class="meme-template"><option value="headline">Headline overlay</option><option value="split-top">Image on top</option><option value="split-bottom">Image on bottom</option><option value="logo">Logo / sticker</option></select></label>
+                <label><span>TEXT POSITION</span><select class="meme-position"><option value="top">Top</option><option value="middle">Middle</option><option value="bottom">Bottom</option></select></label>
+                <label><span>TEXT SIZE</span><select class="meme-font-size"><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option></select></label>
+                <label><span>TEXT COLOR</span><select class="meme-text-color"><option value="white">White</option><option value="lime">KlipPharma lime</option><option value="black">Black</option></select></label>
+                <label><span>TEXT BOX</span><select class="meme-background"><option value="solid">Solid box</option><option value="transparent">Transparent box</option><option value="none">No box</option></select></label>
+              </div>
+              <div class="meme-upload-row">
+                <label class="meme-file-label"><span>IMAGE, LOGO, OR REACTION ART</span><input class="meme-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" /><b>Choose image</b></label>
+                <span class="meme-image-name">No image added</span>
+                <button class="meme-image-remove hidden" type="button">Remove image</button>
+              </div>
+              <div class="meme-timing-grid">
+                <label><span>SHOW FROM <output class="meme-start-label">0:00.0</output></span><input class="meme-start" type="range" min="0" step="0.1" /></label>
+                <label><span>HIDE AT <output class="meme-end-label">0:00.0</output></span><input class="meme-end" type="range" min="0" step="0.1" /></label>
+              </div>
+            </div>
+            <div class="meme-pro-lock hidden" data-meme-pro-lock>
+              <strong>Pro feature</strong>
+              <span>Upgrade to Pro to create memes, split-screen clips, image overlays, and custom headline graphics.</span>
+            </div>
+          </section>
           <div class="watermark-grid">
             <label><span>TEXT WATERMARK <small>OPTIONAL</small></span><input class="watermark-text" maxlength="80" placeholder="@yourhandle or Brand Name" /></label>
             <label><span>POSITION</span><select class="watermark-position"><option value="top-right">Top right</option><option value="top-left">Top left</option><option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option></select></label>
@@ -283,6 +307,6 @@
   </template>
 
   <div class="toast hidden" id="toast"></div>
-  <script src="/app.js?v=0.20.0" type="module"></script>
+  <script src="/app.js?v=0.21.0" type="module"></script>
 </body>
 </html>

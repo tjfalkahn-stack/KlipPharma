@@ -8,7 +8,6 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { normalizeYouTubeSource, sanitizeYouTubeTitle } from "./lib/youtube.js";
 import {
   AuthError,
   authMode,
@@ -97,6 +96,19 @@ const upload = multer({
   },
 });
 
+const overlayImageUpload = multer({
+  storage: multer.diskStorage({
+    destination: uploadDir,
+    filename: (_req, file, cb) => cb(null, `overlay-${crypto.randomUUID()}${path.extname(file.originalname).toLowerCase()}`),
+  }),
+  limits: { fileSize: 12 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    const supportedExtension = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"])
+      .has(path.extname(file.originalname).toLowerCase());
+    cb(null, file.mimetype.startsWith("image/") && supportedExtension);
+  },
+});
+
 app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 app.use(attachUser);
@@ -146,7 +158,6 @@ app.post("/api/auth/logout", async (req, res) => {
 app.use("/api/uploads", requireUser);
 app.use("/api/projects", requireUser);
 app.use("/api/batches", requireUser);
-app.use("/api/youtube", requireUser);
 
 app.post("/api/uploads/presign", async (req, res) => {
   if (!objectStorageConfigured) return res.status(409).json({ error: "Direct cloud uploads are not enabled on this installation." });
@@ -241,73 +252,6 @@ app.post("/api/projects", upload.any(), (req, res) => {
 
   const result = createProjectBatch(req, files, fileOptions);
   res.status(202).json(result);
-});
-
-app.post("/api/youtube/import", (req, res) => {
-  if (req.body.ownershipConfirmed !== true) {
-    return res.status(400).json({ error: "Confirm that you own this video or have permission to download and edit it." });
-  }
-
-  let source;
-  try {
-    source = normalizeYouTubeSource(req.body.url);
-  } catch (error) {
-    return res.status(400).json({ error: error.message });
-  }
-
-  const activeImport = [...jobs.values()].some((job) => (
-    job.userId === req.user.id && job.sourceProvider === "youtube" && (job.status === "queued" || job.status === "processing")
-  ));
-  if (activeImport) return res.status(409).json({ error: "Finish the current YouTube import before starting another one." });
-
-  const id = crypto.randomUUID();
-  const job = {
-    id,
-    userId: req.user.id,
-    batchId: id,
-    batchPosition: 1,
-    batchSize: 1,
-    status: "processing",
-    progress: 3,
-    stage: "Connecting to your YouTube source",
-    originalName: "YouTube video · preparing",
-    filePath: null,
-    objectKey: null,
-    mimeType: "video/mp4",
-    sourceProvider: "youtube",
-    sourceVideoId: source.videoId,
-    sourceReady: false,
-    ownershipConfirmedAt: new Date().toISOString(),
-    processingMode: req.body.transcribe === false ? "manual" : "ai",
-    contentType: normalizeCreatorMode(req.body.contentType),
-    clipLength: normalizeClipLength(req.body.clipLength),
-    createMontage: false,
-    watermarkText: normalizeWatermarkText(req.body.watermarkText),
-    watermarkPosition: normalizeOverlayPosition(req.body.watermarkPosition),
-    planTier: normalizePlanTier(req.user.planTier),
-    klipPharmaWatermarkRequired: !hasPaidPlan(req.user.planTier),
-    audience: req.body.audience || "General audience",
-    goal: req.body.goal || "High-retention social clips",
-    platform: req.body.platform || "Instagram Reels",
-    createdAt: new Date().toISOString(),
-  };
-  jobs.set(id, job);
-  persistJob(job);
-
-  importYouTubeSource(job, source.canonicalUrl)
-    .catch((error) => {
-      console.error("YouTube import failed:", error);
-      removeYouTubeWorkingFiles(job.id);
-      Object.assign(job, {
-        status: "failed",
-        progress: 100,
-        stage: "YouTube import failed",
-        error: friendlyYouTubeError(error),
-      });
-      persistJob(job);
-    });
-
-  return res.status(202).json({ id, batchId: id, ids: [id], sourceProvider: "youtube" });
 });
 
 app.post("/api/projects/cloud", async (req, res) => {
@@ -430,10 +374,23 @@ function runNextProjects() {
 app.get("/api/projects/:id", (req, res) => {
   const job = ownedJob(req, req.params.id);
   if (!job) return res.status(404).json({ error: "Project not found." });
-  const safe = { ...job, montage: job.montage ? { ...job.montage } : undefined };
+  const safe = {
+    ...job,
+    montage: job.montage ? { ...job.montage } : undefined,
+    clips: (job.clips || []).map((clip) => {
+      const safeClip = { ...clip };
+      if (clip.memeImagePath && fs.existsSync(clip.memeImagePath)) {
+        safeClip.memeImageUrl = `/api/projects/${job.id}/clips/${clip.id}/overlay-image`;
+      }
+      delete safeClip.memeImagePath;
+      delete safeClip.memeImageMime;
+      delete safeClip.memeImageName;
+      return safeClip;
+    }),
+  };
   safe.planTier = normalizePlanTier(req.user.planTier);
   safe.klipPharmaWatermarkRequired = !hasPaidPlan(req.user.planTier);
-  if (job.filePath && !isAudioOnly(job.filePath)) safe.sourceUrl = `/api/projects/${job.id}/source`;
+  if (!isAudioOnly(job.filePath)) safe.sourceUrl = `/api/projects/${job.id}/source`;
   if (safe.montage && job.montageAudioPath && fs.existsSync(job.montageAudioPath)) {
     safe.montage.audioName = job.montageAudioName || "Added sound";
     safe.montage.audioUrl = `/api/projects/${job.id}/montage/audio`;
@@ -454,10 +411,9 @@ app.get("/api/projects/:id/source", async (req, res) => {
   try {
     await ensureLocalSource(job);
     res.type(job.mimeType || mimeTypeFor(job.filePath));
-    if (req.query.download === "1") return res.download(job.filePath, path.basename(job.originalName || "KlipPharma-source.mp4"));
-    return res.sendFile(job.filePath);
+    res.sendFile(job.filePath);
   } catch (error) {
-    return res.status(404).json({ error: error.message || "The original source file is no longer available." });
+    res.status(404).json({ error: error.message || "The original source file is no longer available." });
   }
 });
 
@@ -600,11 +556,82 @@ app.patch("/api/projects/:id/clips/:clipId", (req, res) => {
   if (typeof req.body.watermarkText === "string") clip.watermarkText = normalizeWatermarkText(req.body.watermarkText);
   if (req.body.watermarkPosition) clip.watermarkPosition = normalizeOverlayPosition(req.body.watermarkPosition);
   clip.focusX = normalizeFocusX(req.body.focusX, clip.focusX ?? 50);
+  if (hasPaidPlan(req.user.planTier)) {
+    if (typeof req.body.memeEnabled === "boolean") clip.memeEnabled = req.body.memeEnabled;
+    if (typeof req.body.memeHeadline === "string") clip.memeHeadline = normalizeMemeHeadline(req.body.memeHeadline);
+    clip.memeTemplate = normalizeMemeTemplate(req.body.memeTemplate || clip.memeTemplate);
+    clip.memePosition = normalizeMemePosition(req.body.memePosition || clip.memePosition);
+    clip.memeFontSize = normalizeMemeFontSize(req.body.memeFontSize || clip.memeFontSize);
+    clip.memeTextColor = normalizeMemeTextColor(req.body.memeTextColor || clip.memeTextColor);
+    clip.memeBackground = normalizeMemeBackground(req.body.memeBackground || clip.memeBackground);
+    const selectedDuration = clip.end - clip.start;
+    clip.memeStart = normalizeAudioSeconds(req.body.memeStart, clip.memeStart ?? 0, selectedDuration);
+    clip.memeEnd = normalizeAudioSeconds(req.body.memeEnd, clip.memeEnd ?? selectedDuration, selectedDuration);
+    if (clip.memeEnd <= clip.memeStart) clip.memeEnd = Math.min(selectedDuration, clip.memeStart + 0.5);
+  } else {
+    clip.memeEnabled = false;
+  }
   clip.renderStatus = "idle";
   delete clip.downloadUrl;
   delete clip.renderError;
   persistJob(job);
-  res.json({ clip });
+  const safeClip = { ...clip };
+  if (clip.memeImagePath && fs.existsSync(clip.memeImagePath)) {
+    safeClip.memeImageUrl = `/api/projects/${job.id}/clips/${clip.id}/overlay-image`;
+  }
+  delete safeClip.memeImagePath;
+  delete safeClip.memeImageMime;
+  delete safeClip.memeImageName;
+  res.json({ clip: safeClip });
+});
+
+app.get("/api/projects/:id/clips/:clipId/overlay-image", (req, res) => {
+  const job = ownedJob(req, req.params.id);
+  const clip = job?.clips?.find((item) => item.id === req.params.clipId);
+  if (!clip?.memeImagePath || !fs.existsSync(clip.memeImagePath)) return res.status(404).json({ error: "Overlay image not found." });
+  res.type(clip.memeImageMime || mimeTypeFor(clip.memeImagePath));
+  res.sendFile(clip.memeImagePath);
+});
+
+app.post("/api/projects/:id/clips/:clipId/overlay-image", overlayImageUpload.single("image"), (req, res) => {
+  const job = ownedJob(req, req.params.id);
+  const clip = job?.clips?.find((item) => item.id === req.params.clipId);
+  if (!job || !clip) {
+    removeLocalFile(req.file?.path, uploadDir);
+    return res.status(404).json({ error: "Klip not found." });
+  }
+  if (!hasPaidPlan(req.user.planTier)) {
+    removeLocalFile(req.file?.path, uploadDir);
+    return res.status(403).json({ error: "Meme & Overlay Studio is available on the Pro plan." });
+  }
+  if (!req.file) return res.status(400).json({ error: "Choose a PNG, JPG, WebP, or GIF image." });
+  removeLocalFile(clip.memeImagePath, uploadDir);
+  clip.memeImagePath = req.file.path;
+  clip.memeImageMime = req.file.mimetype;
+  clip.memeImageName = String(req.file.originalname || "Overlay image").slice(0, 180);
+  clip.renderStatus = "idle";
+  delete clip.downloadUrl;
+  delete clip.renderError;
+  persistJob(job);
+  res.status(201).json({
+    memeImageUrl: `/api/projects/${job.id}/clips/${clip.id}/overlay-image`,
+    memeImageName: clip.memeImageName,
+  });
+});
+
+app.delete("/api/projects/:id/clips/:clipId/overlay-image", (req, res) => {
+  const job = ownedJob(req, req.params.id);
+  const clip = job?.clips?.find((item) => item.id === req.params.clipId);
+  if (!job || !clip) return res.status(404).json({ error: "Klip not found." });
+  removeLocalFile(clip.memeImagePath, uploadDir);
+  delete clip.memeImagePath;
+  delete clip.memeImageMime;
+  delete clip.memeImageName;
+  clip.renderStatus = "idle";
+  delete clip.downloadUrl;
+  delete clip.renderError;
+  persistJob(job);
+  res.json({ ok: true });
 });
 
 app.post("/api/projects/:id/clips/:clipId/render", async (req, res) => {
@@ -648,89 +675,6 @@ app.post("/api/projects/:id/clips/:clipId/feedback", (req, res) => {
   persistJob(job);
   res.json({ ok: true });
 });
-
-async function importYouTubeSource(job, canonicalUrl) {
-  const outputTemplate = path.join(uploadDir, `${job.id}.%(ext)s`);
-  const args = [
-    "--no-playlist",
-    "--no-warnings",
-    "--newline",
-    "--max-filesize", "1024M",
-    "--match-filter", "duration <= 14400 & !is_live",
-    "--format", "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/b[height<=1080][ext=mp4]/bv*[height<=1080]+ba/b[height<=1080]",
-    "--merge-output-format", "mp4",
-    "--remux-video", "mp4",
-    "--ffmpeg-location", ffmpegPath || "ffmpeg",
-    "--output", outputTemplate,
-    "--print", "after_move:%(title)s",
-    "--print", "after_move:%(filepath)s",
-    canonicalUrl,
-  ];
-  const result = await runYouTubeDownload(process.env.YT_DLP_PATH || "yt-dlp", args, job);
-  const candidates = fs.readdirSync(uploadDir)
-    .filter((name) => name.startsWith(`${job.id}.`) && !name.endsWith(".part") && !name.endsWith(".ytdl"))
-    .map((name) => path.join(uploadDir, name))
-    .filter((filePath) => fs.statSync(filePath).isFile());
-  const downloaded = candidates.sort((a, b) => fs.statSync(b).size - fs.statSync(a).size)[0];
-  if (!downloaded) throw new Error("yt-dlp completed without producing a video file.");
-  const size = fs.statSync(downloaded).size;
-  if (!size || size > 1024 * 1024 * 1024) throw new Error("The imported video must be smaller than 1 GB.");
-
-  const printed = result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const title = sanitizeYouTubeTitle(printed.find((line) => !path.isAbsolute(line)) || "YouTube video");
-  job.filePath = downloaded;
-  job.mimeType = mimeTypeFor(downloaded);
-  job.originalName = `${title}${path.extname(downloaded).toLowerCase() || ".mp4"}`;
-  job.sourceReady = true;
-  Object.assign(job, { status: "queued", progress: 48, stage: "Source MP4 ready · waiting for the klip processor" });
-  persistJob(job);
-  enqueueProject(job);
-}
-
-function runYouTubeDownload(command, args, job) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    let lastSavedProgress = 0;
-    child.stdout.on("data", (chunk) => { stdout = (stdout + chunk).slice(-12000); });
-    child.stderr.on("data", (chunk) => {
-      const text = String(chunk);
-      stderr = (stderr + text).slice(-12000);
-      const match = text.match(/\[download\]\s+([\d.]+)%/);
-      if (!match) return;
-      const percent = Math.max(0, Math.min(100, Number(match[1]) || 0));
-      const progress = 5 + Math.round(percent * 0.4);
-      if (progress < lastSavedProgress + 3) return;
-      lastSavedProgress = progress;
-      job.progress = progress;
-      job.stage = `Downloading your source MP4 · ${Math.round(percent)}%`;
-      persistJob(job);
-    });
-    child.on("error", reject);
-    child.on("close", (code) => code === 0
-      ? resolve({ stdout, stderr })
-      : reject(new Error(`yt-dlp exited ${code}: ${stderr}`)));
-  });
-}
-
-function removeYouTubeWorkingFiles(jobId) {
-  for (const name of fs.readdirSync(uploadDir)) {
-    if (name.startsWith(`${jobId}.`)) removeLocalFile(path.join(uploadDir, name), uploadDir);
-  }
-}
-
-function friendlyYouTubeError(error) {
-  const message = String(error?.message || "");
-  if (error?.code === "ENOENT") return "The YouTube importer is not installed on this server yet.";
-  if (/private video|members-only|age.?restricted|sign in|cookies|not available|unavailable/i.test(message)) {
-    return "YouTube would not release this source. Private, protected, age-restricted, or account-only videos must be downloaded from YouTube Studio first.";
-  }
-  if (/larger than|filesize|max-filesize|duration|live/i.test(message)) {
-    return "This source is too large, longer than four hours, or is a live stream. Use a finished video under 1 GB.";
-  }
-  return "KlipPharma could not import that YouTube video. Confirm it is your public or unlisted upload, or download it from YouTube Studio first.";
-}
 
 async function ensureLocalSource(job) {
   if (job.filePath && fs.existsSync(job.filePath) && fs.statSync(job.filePath).size > 0) return job.filePath;
@@ -964,13 +908,14 @@ async function renderClip(job, clip, planTier = job.planTier) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "klippharma-klip-"));
   try {
     const relevant = (job.segments || []).filter((s) => s.end > clip.start && s.start < clip.end);
+    const duration = clip.end - clip.start;
     let filter = verticalCropFilter(clip.focusX, true);
     const customCaptionText = String(clip.captionText || "").trim();
     const captionCues = customCaptionText
-      ? captionCuesFromText(customCaptionText, clip.end - clip.start)
+      ? captionCuesFromText(customCaptionText, duration)
       : relevant.map((segment) => ({
         start: Math.max(0, segment.start - clip.start),
-        end: Math.min(clip.end - clip.start, segment.end - clip.start),
+        end: Math.min(duration, segment.end - clip.start),
         text: segment.text,
       }));
     if (clip.captionsEnabled !== false && captionCues.length) {
@@ -981,14 +926,17 @@ async function renderClip(job, clip, planTier = job.planTier) {
       filter += `,subtitles='${escapedSubs}':force_style='${captionForceStyle(clip.captionStyle, clip.captionPosition)}'`;
     }
     filter = appendExportWatermarks(filter, tempDir, {
-      duration: clip.end - clip.start,
+      duration,
       customText: clip.watermarkText,
       customPosition: clip.watermarkPosition,
       brandRequired: !hasPaidPlan(planTier),
       prefix: "clip",
     });
+    if (hasPaidPlan(planTier) && clip.memeEnabled) {
+      filter = appendMemeHeadline(filter, tempDir, clip, duration);
+      filter = appendMemeImage(filter, clip, duration);
+    }
     const audioBitrate = job.contentType === "artist" ? "256k" : "160k";
-    const duration = clip.end - clip.start;
     const voiceText = customCaptionText || relevant.map((segment) => segment.text).join(" ").trim();
     const dubPath = job.audioTranslation === "dubbed" && job.translationLanguage !== "original" && voiceText
       ? await synthesizeTranslatedVoice(voiceText, job.dubVoice, tempDir, "voiceover")
@@ -1089,6 +1037,89 @@ function appendExportWatermarks(filter, tempDir, {
     filter += watermarkFilter(brandPath);
   }
   return filter;
+}
+
+function appendMemeHeadline(filter, tempDir, clip, duration) {
+  const headline = normalizeMemeHeadline(clip.memeHeadline);
+  if (!headline) return filter;
+  const subtitlePath = path.join(tempDir, "meme-headline.ass");
+  writeMemeHeadlineSubtitle(subtitlePath, headline, duration, clip);
+  return filter + watermarkFilter(subtitlePath);
+}
+
+function appendMemeImage(filter, clip, duration) {
+  if (!clip.memeImagePath || !fs.existsSync(clip.memeImagePath)) return filter;
+  const escapedPath = clip.memeImagePath.replaceAll("\\", "/").replaceAll(":", "\\:").replaceAll("'", "\\'");
+  const template = normalizeMemeTemplate(clip.memeTemplate);
+  const start = normalizeAudioSeconds(clip.memeStart, 0, duration);
+  const end = Math.max(start + 0.1, normalizeAudioSeconds(clip.memeEnd, duration, duration));
+  const layouts = {
+    "split-top": {
+      imageFilter: "scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960,format=rgba",
+      x: "0",
+      y: "0",
+    },
+    "split-bottom": {
+      imageFilter: "scale=1080:960:force_original_aspect_ratio=increase,crop=1080:960,format=rgba",
+      x: "0",
+      y: "H-h",
+    },
+    logo: {
+      imageFilter: "scale=360:360:force_original_aspect_ratio=decrease,format=rgba",
+      x: "W-w-54",
+      y: "54",
+    },
+    headline: {
+      imageFilter: "scale=420:420:force_original_aspect_ratio=decrease,format=rgba",
+      x: "W-w-54",
+      y: "54",
+    },
+  };
+  const layout = layouts[template] || layouts.headline;
+  return `movie='${escapedPath}',${layout.imageFilter}[memeimage];[in]${filter}[memebase];[memebase][memeimage]overlay=x='${layout.x}':y='${layout.y}':enable='between(t,${start.toFixed(2)},${end.toFixed(2)})':eof_action=repeat[out]`;
+}
+
+function writeMemeHeadlineSubtitle(destination, text, duration, clip) {
+  const position = normalizeMemePosition(clip.memePosition);
+  const alignments = { top: 8, middle: 5, bottom: 2 };
+  const margins = { top: 125, middle: 0, bottom: 170 };
+  const fontSizes = { small: 46, medium: 62, large: 78 };
+  const fontSize = fontSizes[normalizeMemeFontSize(clip.memeFontSize)] || fontSizes.medium;
+  const color = normalizeMemeTextColor(clip.memeTextColor);
+  const background = normalizeMemeBackground(clip.memeBackground);
+  const solidStyles = {
+    white: { primary: "&H000B0F0A", back: "&H00FFFFFF" },
+    lime: { primary: "&H000B0F0A", back: "&H003CEFB8" },
+    black: { primary: "&H00FFFFFF", back: "&H00080B08" },
+  };
+  const plainColours = { white: "&H00FFFFFF", lime: "&H003CEFB8", black: "&H00000000" };
+  const solid = solidStyles[color] || solidStyles.white;
+  const primary = background === "solid" ? solid.primary : (plainColours[color] || plainColours.white);
+  const back = background === "solid" ? solid.back : "&H00000000";
+  const borderStyle = background === "solid" ? 3 : 1;
+  const outline = background === "none" ? 4 : background === "transparent" ? 3 : 0;
+  const safeText = normalizeMemeHeadline(text)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\\N");
+  const start = normalizeAudioSeconds(clip.memeStart, 0, duration);
+  const end = Math.max(start + 0.1, normalizeAudioSeconds(clip.memeEnd, duration, duration));
+  fs.writeFileSync(destination, `[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+ScaledBorderAndShadow: yes
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Meme,Arial,${fontSize},${primary},${primary},&H00000000,${back},-1,0,0,0,100,100,0,0,${borderStyle},${outline},0,${alignments[position]},65,65,${margins[position]},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,${assTime(start)},${assTime(end)},Meme,,0,0,0,,${safeText}
+`);
 }
 
 function watermarkFilter(watermarkPath) {
@@ -1262,6 +1293,35 @@ function normalizeWatermarkText(value = "") {
     .slice(0, 80);
 }
 
+function normalizeMemeHeadline(value = "") {
+  return String(value || "")
+    .replace(/[\u0000-\u0009\u000b-\u001f\u007f{}\\]+/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+    .slice(0, 240);
+}
+
+function normalizeMemeTemplate(value = "headline") {
+  return new Set(["headline", "split-top", "split-bottom", "logo"]).has(value) ? value : "headline";
+}
+
+function normalizeMemePosition(value = "middle") {
+  return new Set(["top", "middle", "bottom"]).has(value) ? value : "middle";
+}
+
+function normalizeMemeFontSize(value = "medium") {
+  return new Set(["small", "medium", "large"]).has(value) ? value : "medium";
+}
+
+function normalizeMemeTextColor(value = "white") {
+  return new Set(["white", "lime", "black"]).has(value) ? value : "white";
+}
+
+function normalizeMemeBackground(value = "solid") {
+  return new Set(["solid", "transparent", "none"]).has(value) ? value : "solid";
+}
+
 function normalizeOverlayPosition(value = "top-right") {
   return new Set(["top-right", "top-left", "bottom-right", "bottom-left"]).has(value) ? value : "top-right";
 }
@@ -1339,7 +1399,10 @@ async function deleteJobPermanently(job) {
     if (name.startsWith(`${job.id}-audio-`)) removeLocalFile(path.join(uploadDir, name), uploadDir);
   }
   removeLocalFile(path.join(exportDir, `${job.id}-preview.mp4`), exportDir);
-  for (const clip of job.clips || []) removeLocalFile(path.join(exportDir, `${job.id}-${clip.id}.mp4`), exportDir);
+  for (const clip of job.clips || []) {
+    removeLocalFile(path.join(exportDir, `${job.id}-${clip.id}.mp4`), exportDir);
+    removeLocalFile(clip.memeImagePath, uploadDir);
+  }
   if (job.montage) removeBatchMontageFiles(job.batchId || job.id);
   removeLocalFile(path.join(projectsDir, `${job.id}.json`), projectsDir);
   jobs.delete(job.id);

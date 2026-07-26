@@ -1,10 +1,21 @@
 # KlipPharma
 
-Current release: **v0.20.0 · Multilingual studio + creator-owned YouTube import**
-
-KlipPharma turns long-form video into ranked, captioned vertical clips and can also assemble a batch into one CapCut-style Auto-Mix. The night-studio workspace supports mixed AI/manual batch uploads, creator-specific editorial modes, owner-authorized YouTube importing, multilingual transcription, translated captions and optional AI-dubbed audio, audience-aware clip scoring, browser-safe previews, adjustable start/end points, editable captions and watermarks, saved project history, feedback, and downloadable 9:16 MP4 exports.
+KlipPharma turns long-form video into ranked, captioned vertical clips and can also assemble a batch into one CapCut-style Auto-Mix. The night-studio workspace supports mixed AI/manual batch uploads, creator-specific editorial modes, multilingual transcription, translated captions and optional AI-dubbed audio, audience-aware clip scoring, browser-safe previews, adjustable start/end points, editable captions and watermarks, saved project history, feedback, and downloadable 9:16 MP4 exports.
 
 **We pick the dopest klips!**
+
+## Version 0.21 — Pro Meme & Overlay Studio
+
+Paid creators can turn any recommended klip into a meme-style social edit before export. Enable **Meme & Overlay Studio** inside a klip to:
+
+- write and revise a large headline or meme caption;
+- choose top, middle, or bottom placement, three sizes, colors, and box styles;
+- upload a PNG, JPG, WebP, or GIF reaction image, logo, or illustration;
+- place that image above or below the video in a split-screen layout or use it as a logo/sticker;
+- set exactly when the creative overlay appears and disappears;
+- preview the composition and burn it into the final H.264/AAC MP4.
+
+The feature is enforced in both the interface and server. Free/demo exports retain the KlipPharma watermark and cannot render Pro creative overlays.
 
 ## Run locally
 
@@ -51,18 +62,6 @@ Set `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_BUCKET`
 ## Container deployment
 
 `Dockerfile` packages the web app and FFmpeg runtime for a container host. `compose.production.example.yml` shows the required production environment without embedding secrets. Keep `/app/storage` on a persistent volume until rendered exports are moved to R2. The container exposes port 3100 and includes an application health check at `/api/health`.
-
-## Importing your own YouTube uploads
-
-The source step accepts one public or unlisted YouTube video at a time. The creator must confirm that they own the video or have permission to download and edit it. KlipPharma rejects playlists, live streams, private, paid, age-restricted, account-only, and protected videos. Imported sources are capped at four hours and 1 GB.
-
-The Docker image installs the pinned yt-dlp runtime automatically. For local Mac development, install it once and restart KlipPharma:
-
-```bash
-brew install yt-dlp
-```
-
-Set `YT_DLP_PATH` only when the executable is not available as `yt-dlp` on the server PATH. Once the source download completes, the processing screen exposes **Download source MP4** while KlipPharma continues into AI transcription or the manual cutter. YouTube may still require creators to use the official Studio download for restricted uploads.
 
 ## Editing a suggested klip
 

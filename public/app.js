@@ -43,6 +43,10 @@ function isPaidPlan(user = currentUser) {
   return paidPlanTiers.has(String(user?.planTier || "free").trim().toLowerCase());
 }
 
+function hasCreativeAccess(user = currentUser) {
+  return isPaidPlan(user) || user?.creativeFeaturesOpen === true;
+}
+
 function paintBrandPolicy(root = document) {
   const paid = isPaidPlan();
   root.querySelectorAll("[data-brand-policy]").forEach((policy) => {
@@ -1123,7 +1127,7 @@ function installTrimmer(project, clip, card) {
     watermarkText: clip.watermarkText ?? project.watermarkText ?? "",
     watermarkPosition: clip.watermarkPosition || project.watermarkPosition || "top-right",
     focusX: Number.isFinite(Number(clip.focusX)) ? Number(clip.focusX) : 50,
-    memeEnabled: isPaidPlan() && clip.memeEnabled === true,
+    memeEnabled: hasCreativeAccess() && clip.memeEnabled === true,
     memeHeadline: String(clip.memeHeadline || ""),
     memeTemplate: clip.memeTemplate || "headline",
     memePosition: clip.memePosition || "middle",
@@ -1150,7 +1154,7 @@ function installTrimmer(project, clip, card) {
   watermarkText.value = state.watermarkText;
   watermarkPosition.value = state.watermarkPosition;
   focusInput.value = String(state.focusX);
-  const proEnabled = isPaidPlan();
+  const proEnabled = hasCreativeAccess();
   memeStudio.classList.toggle("pro-active", proEnabled);
   memeProLock.classList.toggle("hidden", proEnabled);
   memeStudio.querySelector("[data-pro-badge]").textContent = proEnabled ? "PRO ACTIVE" : "PRO";

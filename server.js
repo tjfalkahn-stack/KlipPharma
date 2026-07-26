@@ -48,6 +48,8 @@ const batchMontageTasks = new Map();
 const processingQueue = [];
 const authAttempts = new Map();
 const maxConcurrentProjects = 2;
+const proFeaturesOpen = !new Set(["false", "0", "off", "no"])
+  .has(String(process.env.PRO_FEATURES_OPEN ?? "true").trim().toLowerCase());
 const creatorModes = {
   auto: {
     label: "Smart Detect",
@@ -115,11 +117,11 @@ app.use(attachUser);
 app.use("/exports", requireUser, authorizeExport, express.static(exportDir));
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, name: "KlipPharma", aiConfigured: Boolean(process.env.OPENAI_API_KEY), ffmpeg: true, authMode, uploadMode: objectStorageConfigured ? "direct" : "local" });
+  res.json({ ok: true, name: "KlipPharma", aiConfigured: Boolean(process.env.OPENAI_API_KEY), ffmpeg: true, authMode, uploadMode: objectStorageConfigured ? "direct" : "local", proFeaturesOpen });
 });
 
 app.get("/api/auth/session", (req, res) => {
-  res.json({ required: authMode === "required", authenticated: Boolean(req.user), user: req.user || null });
+  res.json({ required: authMode === "required", authenticated: Boolean(req.user), user: userForClient(req.user) });
 });
 
 app.post("/api/auth/register", authRateLimit, async (req, res) => {
@@ -129,7 +131,7 @@ app.post("/api/auth/register", authRateLimit, async (req, res) => {
     const user = await createUser(credentials.email, credentials.password);
     const session = await createSession(user.id);
     setSessionCookie(res, session);
-    res.status(201).json({ user });
+    res.status(201).json({ user: userForClient(user) });
   } catch (error) {
     authFailure(res, error);
   }
@@ -142,7 +144,7 @@ app.post("/api/auth/login", authRateLimit, async (req, res) => {
     const user = await authenticateUser(credentials.email, credentials.password);
     const session = await createSession(user.id);
     setSessionCookie(res, session);
-    res.json({ user });
+    res.json({ user: userForClient(user) });
   } catch (error) {
     authFailure(res, error);
   }
@@ -556,7 +558,7 @@ app.patch("/api/projects/:id/clips/:clipId", (req, res) => {
   if (typeof req.body.watermarkText === "string") clip.watermarkText = normalizeWatermarkText(req.body.watermarkText);
   if (req.body.watermarkPosition) clip.watermarkPosition = normalizeOverlayPosition(req.body.watermarkPosition);
   clip.focusX = normalizeFocusX(req.body.focusX, clip.focusX ?? 50);
-  if (hasPaidPlan(req.user.planTier)) {
+  if (hasCreativeAccess(req.user.planTier)) {
     if (typeof req.body.memeEnabled === "boolean") clip.memeEnabled = req.body.memeEnabled;
     if (typeof req.body.memeHeadline === "string") clip.memeHeadline = normalizeMemeHeadline(req.body.memeHeadline);
     clip.memeTemplate = normalizeMemeTemplate(req.body.memeTemplate || clip.memeTemplate);
@@ -600,7 +602,7 @@ app.post("/api/projects/:id/clips/:clipId/overlay-image", overlayImageUpload.sin
     removeLocalFile(req.file?.path, uploadDir);
     return res.status(404).json({ error: "Klip not found." });
   }
-  if (!hasPaidPlan(req.user.planTier)) {
+  if (!hasCreativeAccess(req.user.planTier)) {
     removeLocalFile(req.file?.path, uploadDir);
     return res.status(403).json({ error: "Meme & Overlay Studio is available on the Pro plan." });
   }
@@ -932,7 +934,7 @@ async function renderClip(job, clip, planTier = job.planTier) {
       brandRequired: !hasPaidPlan(planTier),
       prefix: "clip",
     });
-    if (hasPaidPlan(planTier) && clip.memeEnabled) {
+    if (hasCreativeAccess(planTier) && clip.memeEnabled) {
       filter = appendMemeHeadline(filter, tempDir, clip, duration);
       filter = appendMemeImage(filter, clip, duration);
     }
@@ -1333,6 +1335,14 @@ function normalizePlanTier(value = "free") {
 
 function hasPaidPlan(value) {
   return normalizePlanTier(value) !== "free";
+}
+
+function hasCreativeAccess(value) {
+  return proFeaturesOpen || hasPaidPlan(value);
+}
+
+function userForClient(user) {
+  return user ? { ...user, creativeFeaturesOpen: hasCreativeAccess(user.planTier) } : null;
 }
 
 function normalizeMixerPercent(value, fallback = 100) {

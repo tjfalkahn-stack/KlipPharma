@@ -4,9 +4,11 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
-## Version 0.21 — Pro Meme & Overlay Studio
+## Version 0.21.1 — Beta creative access
 
-Paid creators can turn any recommended klip into a meme-style social edit before export. Enable **Meme & Overlay Studio** inside a klip to:
+During the pre-payment beta, every signed-in creator can use **Meme & Overlay Studio**. Set `PRO_FEATURES_OPEN=false` after paid plans launch to restore Pro-only access. Free/demo exports continue to carry the KlipPharma watermark.
+
+Creators can turn any recommended klip into a meme-style social edit before export. Enable **Meme & Overlay Studio** inside a klip to:
 
 - write and revise a large headline or meme caption;
 - choose top, middle, or bottom placement, three sizes, colors, and box styles;
@@ -15,7 +17,7 @@ Paid creators can turn any recommended klip into a meme-style social edit before
 - set exactly when the creative overlay appears and disappears;
 - preview the composition and burn it into the final H.264/AAC MP4.
 
-The feature is enforced in both the interface and server. Free/demo exports retain the KlipPharma watermark and cannot render Pro creative overlays.
+The access flag is enforced in both the interface and server. When beta access is closed, paid-plan checks resume without another code change.
 
 ## Run locally
 

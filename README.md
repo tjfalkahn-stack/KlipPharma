@@ -4,6 +4,18 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
+## Version 0.24.0 — Business workspaces
+
+The $199/month Business plan is now a real five-account workspace rather than a display-only price. Business owners can invite teammates with secure seven-day links, assign owner/admin/editor/viewer permissions, share project history and exports, revoke pending invitations, and remove members. Owners control centralized Stripe billing; admins manage people; editors create and edit; viewers review without changing shared work. Business Annual is $1,990/year, giving the same two-month annual discount as the individual tiers.
+
+## Version 0.23.0 — Creator dashboard and plan catalog
+
+Signed-in creators now have an account Dashboard with their email, membership date, current plan, renewal or access-end date, real account-scoped upload history, and upload/klip/completion totals. Billing supports $29 Creator and $79 Pro monthly tiers plus discounted yearly versions. Creator members continue to see a clear Pro upgrade path and can receive a Stripe-configured 15% discount on their first monthly Pro charge. The upgrade prompt disappears once the account reaches Pro.
+
+## Version 0.21.2 — Custom creative colors
+
+Meme & Overlay Studio now includes a full text color picker plus an independent black-or-white box color control. Solid, transparent, and no-box styles remain available, and the chosen colors are preserved in previews and final rendered exports.
+
 ## Version 0.21.1 — Beta creative access
 
 During the pre-payment beta, every signed-in creator can use **Meme & Overlay Studio**. Set `PRO_FEATURES_OPEN=false` after paid plans launch to restore Pro-only access. Free/demo exports continue to carry the KlipPharma watermark.

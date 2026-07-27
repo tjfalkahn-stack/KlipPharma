@@ -6,8 +6,17 @@ const authForm = $("#authForm");
 const authSwitch = $("#authSwitch");
 const authError = $("#authError");
 const accountMenu = $("#accountMenu");
+const billingModal = $("#billingModal");
+const dashboardModal = $("#dashboardModal");
+const checkoutAgreement = $("#checkoutAgreement");
+const cancelAgreement = $("#cancelAgreement");
 const videoInput = $("#video");
 const dropzone = $("#dropzone");
+const youtubeUrl = $("#youtubeUrl");
+const youtubeMode = $("#youtubeMode");
+const youtubeOwnership = $("#youtubeOwnership");
+const youtubeImportButton = $("#youtubeImportButton");
+const youtubeImportStatus = $("#youtubeImportStatus");
 const uploadView = $("#uploadView");
 const processingView = $("#processingView");
 const resultsView = $("#resultsView");
@@ -27,6 +36,8 @@ let previewRecoveryQueue = Promise.resolve();
 let creatingAccount = false;
 let uploadMode = "local";
 let currentUser = null;
+let billingState = null;
+let selectedBillingPlanKey = "creator_monthly";
 const paidPlanTiers = new Set(["paid", "pro", "creator", "studio", "business"]);
 const creatorModeCopy = {
   auto: ["Smart Detect", "Balanced selection for mixed or general content."],
@@ -44,7 +55,8 @@ function isPaidPlan(user = currentUser) {
 }
 
 function hasCreativeAccess(user = currentUser) {
-  return isPaidPlan(user) || user?.creativeFeaturesOpen === true;
+  return new Set(["pro", "studio", "business"]).has(String(user?.planTier || "").toLowerCase())
+    || user?.creativeFeaturesOpen === true;
 }
 
 function paintBrandPolicy(root = document) {
@@ -108,6 +120,53 @@ dropzone.addEventListener("drop", (event) => {
   if (result.limitReached) toast("KlipPharma holds up to 10 files in one batch.");
   else if (result.added) toast(`${result.added} ${result.added === 1 ? "video" : "videos"} added. ${selectedFiles.length} total.`);
   else toast("That video is already in this batch.");
+});
+
+youtubeImportButton.addEventListener("click", async () => {
+  const url = youtubeUrl.value.trim();
+  if (!url) return toast("Paste your YouTube video link first.");
+  if (!youtubeOwnership.checked) return toast("Confirm that you own the video or have permission to use it.");
+
+  youtubeImportButton.disabled = true;
+  youtubeImportButton.textContent = "Starting secure import…";
+  youtubeImportStatus.classList.remove("hidden");
+  youtubeImportStatus.textContent = "Connecting to YouTube. You can download the source MP4 as soon as it is ready.";
+  try {
+    const settings = new FormData(form);
+    const response = await fetch("/api/youtube/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url,
+        ownershipConfirmed: true,
+        transcribe: youtubeMode.value !== "manual",
+        audience: settings.get("audience"),
+        goal: settings.get("goal"),
+        platform: settings.get("platform"),
+        contentType: settings.get("contentType"),
+        clipLength: settings.get("clipLength"),
+        sourceLanguage: settings.get("sourceLanguage"),
+        translationLanguage: settings.get("translationLanguage"),
+        audioTranslation: settings.get("audioTranslation"),
+        dubVoice: settings.get("dubVoice"),
+        watermarkText: settings.get("watermarkText"),
+        watermarkPosition: settings.get("watermarkPosition"),
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "The YouTube import could not start.");
+    currentProjects = [data.id];
+    youtubeUrl.value = "";
+    youtubeOwnership.checked = false;
+    setView("processing");
+    await pollProjects();
+  } catch (error) {
+    youtubeImportStatus.textContent = error.message || "The YouTube import could not start.";
+    toast(youtubeImportStatus.textContent);
+  } finally {
+    youtubeImportButton.disabled = false;
+    youtubeImportButton.innerHTML = "Import my YouTube video <b>→</b>";
+  }
 });
 
 form.addEventListener("submit", async (event) => {
@@ -250,6 +309,14 @@ function renderBatchStatus(projects) {
           ? "Queued"
           : `${project.progress || 0}% · ${project.stage}`;
     row.append(name, detail);
+    if (project.sourceReady && project.sourceUrl) {
+      const download = document.createElement("a");
+      download.className = "batch-source-download";
+      download.href = `${project.sourceUrl}?download=1`;
+      download.download = "";
+      download.textContent = "Download source MP4";
+      row.append(download);
+    }
     statusBox.append(row);
   });
 }
@@ -265,6 +332,11 @@ function renderResults(projects) {
     section.querySelector(".source-number").textContent = `SOURCE ${index + 1} OF ${projects.length}`;
     section.querySelector(".source-name").textContent = project.originalName;
     section.querySelector(".source-count").textContent = `${project.clips.length} ${project.clips.length === 1 ? "KLIP" : "KLIPS"}`;
+    const sourceDownload = section.querySelector(".source-download");
+    if (project.sourceUrl) {
+      sourceDownload.href = `${project.sourceUrl}?download=1`;
+      sourceDownload.classList.remove("hidden");
+    }
     section.querySelector(".delete-source").addEventListener("click", (event) => deleteSourceProject(project, event.currentTarget));
     const grid = section.querySelector(".project-clip-grid");
     renderProjectClips(project, grid);
@@ -1095,6 +1167,8 @@ function installTrimmer(project, clip, card) {
   const memePosition = card.querySelector(".meme-position");
   const memeFontSize = card.querySelector(".meme-font-size");
   const memeTextColor = card.querySelector(".meme-text-color");
+  const memeTextColorValue = card.querySelector(".meme-text-color-value");
+  const memeBoxColor = card.querySelector(".meme-box-color");
   const memeBackground = card.querySelector(".meme-background");
   const memeImageInput = card.querySelector(".meme-image-input");
   const memeImageName = card.querySelector(".meme-image-name");
@@ -1132,7 +1206,8 @@ function installTrimmer(project, clip, card) {
     memeTemplate: clip.memeTemplate || "headline",
     memePosition: clip.memePosition || "middle",
     memeFontSize: clip.memeFontSize || "medium",
-    memeTextColor: clip.memeTextColor || "white",
+    memeTextColor: normalizeClientColor(clip.memeTextColor),
+    memeBoxColor: clip.memeBoxColor || "black",
     memeBackground: clip.memeBackground || "solid",
     memeStart: Number.isFinite(Number(clip.memeStart)) ? Number(clip.memeStart) : 0,
     memeEnd: Number.isFinite(Number(clip.memeEnd)) ? Number(clip.memeEnd) : Math.max(1, original.end - original.start),
@@ -1167,6 +1242,8 @@ function installTrimmer(project, clip, card) {
   memePosition.value = state.memePosition;
   memeFontSize.value = state.memeFontSize;
   memeTextColor.value = state.memeTextColor;
+  memeTextColorValue.textContent = state.memeTextColor.toUpperCase();
+  memeBoxColor.value = state.memeBoxColor;
   memeBackground.value = state.memeBackground;
   memeImageName.textContent = state.memeImageUrl ? "Overlay image added" : "No image added";
   memeImageRemove.classList.toggle("hidden", !state.memeImageUrl);
@@ -1215,9 +1292,18 @@ function installTrimmer(project, clip, card) {
       state.memeHeadline ? "" : "hidden",
       `position-${state.memePosition}`,
       `size-${state.memeFontSize}`,
-      `color-${state.memeTextColor}`,
       `bg-${state.memeBackground}`,
     ].filter(Boolean).join(" ");
+    const boxIsWhite = state.memeBoxColor === "white";
+    memePreviewHeadline.style.color = state.memeTextColor;
+    memePreviewHeadline.style.background = state.memeBackground === "none"
+      ? "transparent"
+      : boxIsWhite
+        ? (state.memeBackground === "transparent" ? "rgba(255,255,255,.72)" : "#ffffff")
+        : (state.memeBackground === "transparent" ? "rgba(0,0,0,.66)" : "#000000");
+    memePreviewHeadline.style.textShadow = state.memeBackground === "none"
+      ? "0 2px 5px #000, 0 0 2px #000"
+      : "none";
     memePreviewImage.classList.toggle("hidden", !state.memeImageUrl);
     if (state.memeImageUrl && memePreviewImage.src !== new URL(state.memeImageUrl, window.location.href).href) {
       memePreviewImage.src = state.memeImageUrl;
@@ -1317,6 +1403,7 @@ function installTrimmer(project, clip, card) {
       memePosition: state.memePosition,
       memeFontSize: state.memeFontSize,
       memeTextColor: state.memeTextColor,
+      memeBoxColor: state.memeBoxColor,
       memeBackground: state.memeBackground,
       memeStart: state.memeStart,
       memeEnd: state.memeEnd,
@@ -1399,7 +1486,11 @@ function installTrimmer(project, clip, card) {
     [memeTemplate, "change", () => { state.memeTemplate = memeTemplate.value; }],
     [memePosition, "change", () => { state.memePosition = memePosition.value; }],
     [memeFontSize, "change", () => { state.memeFontSize = memeFontSize.value; }],
-    [memeTextColor, "change", () => { state.memeTextColor = memeTextColor.value; }],
+    [memeTextColor, "input", () => {
+      state.memeTextColor = memeTextColor.value;
+      memeTextColorValue.textContent = state.memeTextColor.toUpperCase();
+    }],
+    [memeBoxColor, "change", () => { state.memeBoxColor = memeBoxColor.value; }],
     [memeBackground, "change", () => { state.memeBackground = memeBackground.value; }],
     [memeStart, "input", () => {
       state.memeStart = Number(memeStart.value);
@@ -1568,6 +1659,11 @@ deleteBatchButton.addEventListener("click", async () => {
 function setView(view) { uploadView.classList.toggle("hidden", view !== "upload"); processingView.classList.toggle("hidden", view !== "processing"); resultsView.classList.toggle("hidden", view !== "results"); }
 function clock(seconds) { const m=Math.floor(seconds/60); return `${m}:${String(Math.floor(seconds%60)).padStart(2,"0")}`; }
 function preciseClock(seconds) { const m=Math.floor(seconds/60); return `${m}:${String((seconds%60).toFixed(1)).padStart(4,"0")}`; }
+function normalizeClientColor(value) {
+  const legacy = { white: "#ffffff", lime: "#b8ef3c", black: "#000000" };
+  const color = legacy[String(value || "").toLowerCase()] || String(value || "").trim();
+  return /^#[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : "#ffffff";
+}
 function toast(message) { const el=$("#toast"); el.textContent=message; el.classList.remove("hidden"); setTimeout(()=>el.classList.add("hidden"),4000); }
 
 authSwitch.addEventListener("click", () => {
@@ -1595,7 +1691,9 @@ authForm.addEventListener("submit", async (event) => {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Could not access your account.");
     showApplication(data.user);
+    loadBillingStatus();
     authForm.reset();
+    if (await acceptPendingInvitation()) return;
     await loadRecentProjects();
   } catch (error) {
     authError.textContent = error.message || "Could not access your account.";
@@ -1613,6 +1711,391 @@ $("#logoutButton").addEventListener("click", async () => {
   showAuthentication();
 });
 
+$("#billingButton").addEventListener("click", openBilling);
+$("#dashboardButton").addEventListener("click", openDashboard);
+$("#billingClose").addEventListener("click", closeBilling);
+$("#dashboardClose").addEventListener("click", closeDashboard);
+billingModal.addEventListener("click", (event) => {
+  if (event.target === billingModal) closeBilling();
+});
+dashboardModal.addEventListener("click", (event) => {
+  if (event.target === dashboardModal) closeDashboard();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !billingModal.classList.contains("hidden")) closeBilling();
+  if (event.key === "Escape" && !dashboardModal.classList.contains("hidden")) closeDashboard();
+});
+checkoutAgreement.addEventListener("change", () => {
+  $("#checkoutButton").disabled = !billingState?.configured
+    || billingState?.canManageBilling === false
+    || !checkoutAgreement.checked;
+});
+cancelAgreement.addEventListener("change", () => {
+  $("#cancelSubscriptionButton").disabled = billingState?.canManageBilling === false || !cancelAgreement.checked;
+});
+$("#checkoutButton").addEventListener("click", async () => {
+  if (!checkoutAgreement.checked) return;
+  const activeUpgrade = Boolean(
+    billingState?.subscription?.active
+    && new Set(["creator", "pro"]).has(String(billingState.subscription.planTier || "").toLowerCase()),
+  );
+  const data = await billingPost(activeUpgrade ? "/api/billing/upgrade" : "/api/billing/checkout", {
+    planKey: selectedBillingPlanKey,
+    recurringAuthorizationAccepted: true,
+  });
+  if (data?.url) window.location.assign(data.url);
+  if (data?.subscription) {
+    billingState.subscription = data.subscription;
+    currentUser.planTier = data.subscription.planTier;
+    renderBilling();
+    toast(selectedBillingPlanKey === "pro_monthly"
+      ? "Pro activated. Your 15% first-month upgrade offer was applied."
+      : "Your upgraded plan is active.");
+  }
+});
+$("#upgradeProButton").addEventListener("click", () => {
+  const tier = String(billingState?.subscription?.planTier || "free").toLowerCase();
+  selectedBillingPlanKey = tier === "pro" ? "business_monthly" : "pro_monthly";
+  renderBilling();
+  checkoutAgreement.focus();
+  toast(tier === "pro"
+    ? "Business selected with five included team seats."
+    : "Monthly Pro selected. Accept the authorization below to apply your 15% first-month offer.");
+});
+$("#portalButton").addEventListener("click", async () => {
+  const data = await billingPost("/api/billing/portal");
+  if (data?.url) window.location.assign(data.url);
+});
+$("#cancelSubscriptionButton").addEventListener("click", async () => {
+  if (!cancelAgreement.checked) return;
+  const data = await billingPost("/api/billing/cancel", { agreementAccepted: true });
+  if (data?.subscription) {
+    billingState.subscription = data.subscription;
+    renderBilling();
+    toast("Recurring renewal cancelled. Your plan remains active through the current billing period.");
+  }
+});
+$("#resumeSubscriptionButton").addEventListener("click", async () => {
+  const data = await billingPost("/api/billing/resume");
+  if (data?.subscription) {
+    billingState.subscription = data.subscription;
+    renderBilling();
+    toast("Your KlipPharma renewal is active.");
+  }
+});
+
+$("#dashboardUpgradeButton").addEventListener("click", () => {
+  closeDashboard();
+  openBilling();
+});
+
+function closeBilling() {
+  billingModal.classList.add("hidden");
+}
+
+function closeDashboard() {
+  dashboardModal.classList.add("hidden");
+}
+
+async function openDashboard() {
+  dashboardModal.classList.remove("hidden");
+  $("#dashboardHistory").innerHTML = '<div class="dashboard-empty">Loading your account history…</div>';
+  $("#dashboardError").classList.add("hidden");
+  try {
+    const response = await fetch("/api/account/dashboard");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not load your dashboard.");
+    renderDashboard(data);
+  } catch (error) {
+    $("#dashboardError").textContent = error.message;
+    $("#dashboardError").classList.remove("hidden");
+  }
+}
+
+function renderDashboard(data) {
+  const user = data.user || currentUser || {};
+  const subscription = data.subscription || {};
+  const stats = data.stats || {};
+  const projects = data.projects || [];
+  $("#dashboardEmail").textContent = user.email || "Local owner";
+  $("#dashboardMemberSince").textContent = user.createdAt
+    ? `Member since ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(user.createdAt))}`
+    : "Private creator workspace";
+  $("#dashboardPlan").textContent = subscription.active ? subscription.planName : "Free";
+  const periodDate = subscription.currentPeriodEnd
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: "long" }).format(new Date(subscription.currentPeriodEnd))
+    : null;
+  $("#dashboardRenewal").textContent = subscription.active
+    ? subscription.cancelAtPeriodEnd ? `Access ends ${periodDate}` : `Renews ${periodDate || "automatically"}`
+    : "No renewal scheduled";
+  $("#dashboardUploads").textContent = stats.uploads || 0;
+  $("#dashboardClips").textContent = stats.clips || 0;
+  $("#dashboardCompleted").textContent = stats.completed || 0;
+  const tier = String(subscription.planTier || user.planTier || "free").toLowerCase();
+  $("#dashboardUpgrade").classList.toggle("hidden", tier === "business");
+  $("#dashboardUpgradeTitle").textContent = new Set(["pro", "studio"]).has(tier)
+    ? "Bring your team to Business"
+    : tier === "creator"
+    ? "Move from Creator to Pro"
+    : "Build toward the $79 Pro studio";
+  $("#dashboardUpgradeCopy").textContent = new Set(["pro", "studio"]).has(tier)
+    ? "Business is $199/month and includes five accounts, shared project history, roles, invitations, and centralized billing."
+    : tier === "creator"
+    ? "Upgrade from the $29 plan and receive 15% off your first $79 Pro month."
+    : "Start with Creator or unlock Pro creative tools. Annual plans include a built-in discount.";
+  $("#dashboardTeam").classList.toggle("hidden", tier !== "business");
+  $("#dashboardHistoryScope").textContent = tier === "business" ? "Shared workspace history" : "Account-only history";
+  if (tier === "business") loadTeamPanel();
+  const history = $("#dashboardHistory");
+  history.innerHTML = "";
+  if (!projects.length) {
+    history.innerHTML = '<div class="dashboard-empty">Your uploads will appear here after your first harvest.</div>';
+    return;
+  }
+  projects.slice(0, 12).forEach((project) => {
+    const row = document.createElement("div");
+    row.className = "dashboard-upload";
+    const name = document.createElement("strong");
+    name.textContent = project.originalName || "Untitled upload";
+    const detail = document.createElement("span");
+    const date = project.createdAt ? new Date(project.createdAt).toLocaleDateString() : "Saved";
+    detail.textContent = `${date} · ${project.clipCount || 0} klips · ${project.status}`;
+    const open = document.createElement("button");
+    open.type = "button";
+    open.textContent = "Open";
+    open.disabled = project.status !== "ready";
+    open.addEventListener("click", async () => {
+      closeDashboard();
+      await openSavedBatch([project.id], open);
+    });
+    row.append(name, detail, open);
+    history.append(row);
+  });
+}
+
+async function loadTeamPanel() {
+  try {
+    const response = await fetch("/api/team");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not load the Business workspace.");
+    renderTeamPanel(data);
+  } catch (error) {
+    $("#dashboardError").textContent = error.message;
+    $("#dashboardError").classList.remove("hidden");
+  }
+}
+
+function renderTeamPanel(data) {
+  const workspace = data.workspace || {};
+  const members = workspace.members || [];
+  const invitations = data.invitations || [];
+  $("#teamWorkspaceName").textContent = workspace.name || "Business workspace";
+  $("#teamSeatCount").textContent = `${members.length + invitations.length} of ${workspace.seatLimit || 5} seats assigned`;
+  $("#teamInviteForm").classList.toggle("hidden", !workspace.canManageTeam);
+  const memberRoot = $("#teamMembers");
+  memberRoot.innerHTML = "";
+  members.forEach((member) => {
+    const row = document.createElement("div");
+    row.className = "team-row";
+    const copy = document.createElement("div");
+    copy.innerHTML = `<strong></strong><span></span>`;
+    copy.querySelector("strong").textContent = member.email;
+    copy.querySelector("span").textContent = member.role;
+    row.append(copy);
+    if (workspace.canManageTeam && member.role !== "owner") {
+      const role = document.createElement("select");
+      ["admin", "editor", "viewer"].forEach((value) => role.add(new Option(value, value)));
+      role.value = member.role;
+      role.addEventListener("change", async () => {
+        await teamRequest(`/api/team/members/${member.userId}`, "PATCH", { role: role.value });
+        loadTeamPanel();
+      });
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "Remove";
+      remove.addEventListener("click", async () => {
+        if (!window.confirm(`Remove ${member.email} from this workspace?`)) return;
+        await teamRequest(`/api/team/members/${member.userId}`, "DELETE");
+        loadTeamPanel();
+      });
+      row.append(role, remove);
+    }
+    memberRoot.append(row);
+  });
+  const inviteRoot = $("#teamInvitations");
+  inviteRoot.innerHTML = invitations.length ? '<h4>Pending invitations</h4>' : "";
+  invitations.forEach((invite) => {
+    const row = document.createElement("div");
+    row.className = "team-row";
+    const copy = document.createElement("div");
+    copy.innerHTML = `<strong></strong><span></span>`;
+    copy.querySelector("strong").textContent = invite.email;
+    copy.querySelector("span").textContent = `${invite.role} · pending`;
+    row.append(copy);
+    if (workspace.canManageTeam) {
+      const revoke = document.createElement("button");
+      revoke.type = "button";
+      revoke.textContent = "Revoke";
+      revoke.addEventListener("click", async () => {
+        await teamRequest(`/api/team/invitations/${invite.id}`, "DELETE");
+        loadTeamPanel();
+      });
+      row.append(revoke);
+    }
+    inviteRoot.append(row);
+  });
+}
+
+$("#teamInviteForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const data = await teamRequest("/api/team/invitations", "POST", {
+    email: $("#teamInviteEmail").value,
+    role: $("#teamInviteRole").value,
+  });
+  if (!data?.invitation) return;
+  $("#teamInviteEmail").value = "";
+  await navigator.clipboard?.writeText(data.invitation.inviteUrl).catch(() => {});
+  window.prompt("Copy this secure invitation link and send it to your teammate:", data.invitation.inviteUrl);
+  loadTeamPanel();
+});
+
+async function teamRequest(url, method, body = null) {
+  const response = await fetch(url, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    toast(data.error || "The team request could not be completed.");
+    return null;
+  }
+  return data;
+}
+
+async function openBilling() {
+  billingModal.classList.remove("hidden");
+  $("#billingStatus").textContent = "Checking your subscription…";
+  $("#billingError").classList.add("hidden");
+  checkoutAgreement.checked = false;
+  cancelAgreement.checked = false;
+  $("#checkoutButton").disabled = true;
+  $("#cancelSubscriptionButton").disabled = true;
+  await loadBillingStatus();
+}
+
+async function loadBillingStatus() {
+  try {
+    const response = await fetch("/api/billing/status");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not load billing.");
+    billingState = data;
+    renderBilling();
+  } catch (error) {
+    showBillingError(error.message);
+  }
+}
+
+function renderBilling() {
+  if (!billingState) return;
+  const { configured, catalog = [], subscription } = billingState;
+  const active = Boolean(subscription?.active);
+  const ending = active && subscription.cancelAtPeriodEnd;
+  const tier = String(subscription?.planTier || "free").toLowerCase();
+  const creatorUpgrade = active && tier === "creator";
+  const businessUpgrade = active && tier === "pro";
+  const upgradeEligible = creatorUpgrade || businessUpgrade;
+  const canManageBilling = billingState.canManageBilling !== false;
+  const endDate = subscription?.currentPeriodEnd
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: "long" }).format(new Date(subscription.currentPeriodEnd))
+    : "the end of your current paid period";
+  $("#billingStart").classList.toggle("hidden", active && !upgradeEligible);
+  $("#billingManage").classList.toggle("hidden", !active);
+  $("#billingUpgrade").classList.toggle("hidden", !upgradeEligible || !canManageBilling);
+  $("#cancelPanel").classList.toggle("hidden", ending);
+  $("#resumeSubscriptionButton").classList.toggle("hidden", !ending);
+  const allowedTiers = !active ? null : creatorUpgrade ? ["pro", "business"] : businessUpgrade ? ["business"] : [];
+  renderPlanCatalog(catalog, allowedTiers);
+  $("#billingUpgradeKicker").textContent = businessUpgrade ? "PRO → BUSINESS" : "CREATOR → PRO OFFER";
+  $("#billingUpgradeTitle").textContent = businessUpgrade ? "Add a five-seat Business workspace" : "Get 15% off your first Pro month";
+  $("#billingUpgradeCopy").textContent = businessUpgrade
+    ? "Move to Business for shared projects, team roles, invitations, and centralized billing."
+    : "Active $29 Creator members can move to the $79 Pro studio and receive the one-time upgrade discount.";
+  $("#upgradeProButton").textContent = businessUpgrade ? "Upgrade to Business →" : "Upgrade to Pro →";
+  $("#billingStatus").textContent = !configured
+    ? "Billing setup is not complete on this installation."
+    : ending
+      ? `${subscription.planName} is active. Renewal is cancelled and access ends ${endDate}.`
+      : active
+        ? `${subscription.planName} is active at ${subscription.priceLabel || "the current recurring price"}.`
+        : "You are currently on the Free plan.";
+  $("#billingRenewal").textContent = ending
+    ? `No additional renewal charge is scheduled. Your plan remains available through ${endDate}.`
+    : `Your subscription renews automatically every ${subscription.interval || "billing period"}. Your current paid period ends ${endDate}.`;
+  $("#cancelAgreementCopy").textContent = `I understand my plan remains active through ${endDate}, then access ends and future recurring charges stop.`;
+  $("#checkoutButton").disabled = !configured || !checkoutAgreement.checked || !canManageBilling;
+  $("#checkoutButton").textContent = upgradeEligible ? "Upgrade selected plan →" : "Continue to secure checkout →";
+  $("#upgradeProButton").disabled = !configured;
+  $("#portalButton").disabled = !canManageBilling;
+  $("#cancelSubscriptionButton").disabled = !canManageBilling || !cancelAgreement.checked;
+  $("#accountPlan").textContent = active ? tier.toUpperCase() : "FREE";
+  if (currentUser) {
+    currentUser.planTier = subscription?.planTier || currentUser.planTier;
+    paintBrandPolicy(document);
+  }
+}
+
+function renderPlanCatalog(catalog, filterTiers = null) {
+  const root = $("#planCatalog");
+  root.innerHTML = "";
+  const available = catalog.filter((plan) => (
+    plan.configured && (!filterTiers || filterTiers.includes(plan.tier))
+  ));
+  if (!available.length) {
+    root.innerHTML = '<div class="dashboard-empty">Plan prices are being configured.</div>';
+    return;
+  }
+  if (!available.some((plan) => plan.key === selectedBillingPlanKey)) selectedBillingPlanKey = available[0].key;
+  available.forEach((plan) => {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = `plan-option${plan.key === selectedBillingPlanKey ? " selected" : ""}`;
+    option.innerHTML = `<strong>${plan.name}</strong><b>${plan.priceLabel}</b><small>${plan.headline}</small>${plan.interval === "year" ? "<em>YEARLY SAVINGS</em>" : ""}`;
+    option.addEventListener("click", () => {
+      selectedBillingPlanKey = plan.key;
+      renderPlanCatalog(catalog, filterTiers);
+    });
+    root.append(option);
+  });
+  const plan = catalog.find((item) => item.key === selectedBillingPlanKey);
+  $("#checkoutAgreementCopy").textContent = plan
+    ? `I authorize KlipPharma to charge ${plan.priceLabel} automatically every ${plan.interval} until I cancel.`
+    : "I authorize KlipPharma to charge the selected recurring price automatically until I cancel.";
+}
+
+async function billingPost(url, body = {}) {
+  $("#billingError").classList.add("hidden");
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "The billing request could not be completed.");
+    return data;
+  } catch (error) {
+    showBillingError(error.message);
+    return null;
+  }
+}
+
+function showBillingError(message) {
+  const element = $("#billingError");
+  element.textContent = message || "The billing request could not be completed.";
+  element.classList.remove("hidden");
+}
+
 async function bootstrapApplication() {
   try {
     const [response, healthResponse] = await Promise.all([fetch("/api/auth/session"), fetch("/api/health")]);
@@ -1622,6 +2105,8 @@ async function bootstrapApplication() {
     if (!response.ok) throw new Error(data.error);
     if (data.authenticated) {
       showApplication(data.user);
+      loadBillingStatus();
+      if (await acceptPendingInvitation()) return;
       await loadRecentProjects();
     } else {
       showAuthentication();
@@ -1633,17 +2118,42 @@ async function bootstrapApplication() {
   }
 }
 
+async function acceptPendingInvitation() {
+  const url = new URL(window.location.href);
+  const token = url.searchParams.get("invite");
+  if (!token || !currentUser) return false;
+  try {
+    const response = await fetch("/api/team/invitations/accept", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not accept that workspace invitation.");
+    url.searchParams.delete("invite");
+    history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    toast("Business workspace joined. Loading your shared studio…");
+    window.setTimeout(() => window.location.reload(), 500);
+    return true;
+  } catch (error) {
+    url.searchParams.delete("invite");
+    history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    toast(error.message || "That invitation could not be accepted.");
+    return false;
+  }
+}
+
 function showApplication(user) {
   currentUser = user || null;
   authView.classList.add("hidden");
   appShell.classList.remove("hidden");
   paintBrandPolicy(document);
-  if (user?.local) {
-    accountMenu.classList.add("hidden");
-  } else {
-    $("#accountEmail").textContent = user?.email || "Creator";
-    accountMenu.classList.remove("hidden");
-  }
+  $("#accountEmail").textContent = user?.local ? "Local owner" : (user?.email || "Creator");
+  $("#accountPlan").textContent = user?.local
+    ? "PREVIEW"
+    : String(user?.planTier || "free").toUpperCase();
+  $("#logoutButton").classList.toggle("hidden", Boolean(user?.local));
+  accountMenu.classList.remove("hidden");
 }
 
 function showAuthentication() {
@@ -1655,3 +2165,16 @@ function showAuthentication() {
 }
 
 bootstrapApplication();
+
+const billingResult = new URLSearchParams(window.location.search).get("billing");
+if (billingResult) {
+  history.replaceState({}, "", window.location.pathname);
+  setTimeout(() => {
+    if (billingResult === "success") {
+      toast("Payment received. KlipPharma Pro is being activated.");
+      openBilling();
+    } else {
+      toast("Secure checkout was closed. No subscription change was made.");
+    }
+  }, 500);
+}

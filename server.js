@@ -1,6 +1,7 @@
 import express from "express";
 import multer from "multer";
 import OpenAI from "openai";
+import Stripe from "stripe";
 import ffmpegPath from "ffmpeg-static";
 import fs from "node:fs";
 import os from "node:os";
@@ -12,14 +13,27 @@ import {
   AuthError,
   authMode,
   authenticateUser,
+  beginStripeWebhookEvent,
   createSession,
   createUser,
+  createWorkspaceInvitation,
   deleteDatabaseProject,
   deleteSession,
+  acceptWorkspaceInvitation,
+  findUserById,
   findSessionUser,
+  getWorkspaceContext,
   initializeDatabase,
+  listWorkspaceInvitations,
   loadDatabaseProjects,
+  recordBillingAgreement,
+  removeWorkspaceMember,
+  releaseStripeWebhookEvent,
+  revokeWorkspaceInvitation,
   saveDatabaseProject,
+  setStripeCustomerId,
+  syncStripeSubscription,
+  updateWorkspaceMemberRole,
   validateCredentials,
 } from "./lib/database.js";
 import {
@@ -30,6 +44,7 @@ import {
   objectStorageConfigured,
   verifyObject,
 } from "./lib/object-storage.js";
+import { normalizeYouTubeSource, sanitizeYouTubeTitle } from "./lib/youtube.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const storageRoot = process.env.STORAGE_ROOT ? path.resolve(process.env.STORAGE_ROOT) : path.join(__dirname, "storage");
@@ -42,6 +57,21 @@ fs.mkdirSync(projectsDir, { recursive: true });
 
 const app = express();
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const stripeSecretKey = String(process.env.STRIPE_SECRET_KEY || "").trim();
+const stripeWebhookSecret = String(process.env.STRIPE_WEBHOOK_SECRET || "").trim();
+const stripeCreatorMonthlyPriceId = String(
+  process.env.STRIPE_CREATOR_MONTHLY_PRICE_ID || process.env.STRIPE_PRO_PRICE_ID || "",
+).trim();
+const stripeCreatorYearlyPriceId = String(process.env.STRIPE_CREATOR_YEARLY_PRICE_ID || "").trim();
+const stripeProMonthlyPriceId = String(process.env.STRIPE_PRO_MONTHLY_PRICE_ID || "").trim();
+const stripeProYearlyPriceId = String(process.env.STRIPE_PRO_YEARLY_PRICE_ID || "").trim();
+const stripeBusinessMonthlyPriceId = String(process.env.STRIPE_BUSINESS_MONTHLY_PRICE_ID || "").trim();
+const stripeBusinessYearlyPriceId = String(process.env.STRIPE_BUSINESS_YEARLY_PRICE_ID || "").trim();
+const stripeProUpgradeCouponId = String(process.env.STRIPE_PRO_UPGRADE_COUPON_ID || "").trim();
+const stripe = stripeSecretKey ? new Stripe(stripeSecretKey) : null;
+const billingConfigured = Boolean(stripe && stripeWebhookSecret && stripeCreatorMonthlyPriceId);
+const appBaseUrl = String(process.env.APP_BASE_URL || `http://localhost:${process.env.PORT || 3100}`)
+  .trim().replace(/\/+$/, "");
 const jobs = new Map();
 const previewTasks = new Map();
 const batchMontageTasks = new Map();
@@ -111,13 +141,37 @@ const overlayImageUpload = multer({
   },
 });
 
+app.post("/api/billing/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+  if (!stripe || !stripeWebhookSecret) return res.status(503).send("Stripe billing is not configured.");
+  const signature = req.headers["stripe-signature"];
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, signature, stripeWebhookSecret);
+  } catch (error) {
+    console.warn("Rejected Stripe webhook:", error.message);
+    return res.status(400).send("Invalid webhook signature.");
+  }
+
+  let claimed = false;
+  try {
+    claimed = await beginStripeWebhookEvent(event.id, event.type);
+    if (!claimed) return res.json({ received: true, duplicate: true });
+    await handleStripeEvent(event);
+    return res.json({ received: true });
+  } catch (error) {
+    if (claimed) await releaseStripeWebhookEvent(event.id).catch(() => {});
+    console.error("Stripe webhook error:", error);
+    return res.status(500).send("Webhook processing failed.");
+  }
+});
+
 app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 app.use(attachUser);
 app.use("/exports", requireUser, authorizeExport, express.static(exportDir));
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, name: "KlipPharma", aiConfigured: Boolean(process.env.OPENAI_API_KEY), ffmpeg: true, authMode, uploadMode: objectStorageConfigured ? "direct" : "local", proFeaturesOpen });
+  res.json({ ok: true, name: "KlipPharma", aiConfigured: Boolean(process.env.OPENAI_API_KEY), ffmpeg: true, authMode, uploadMode: objectStorageConfigured ? "direct" : "local", proFeaturesOpen, billingConfigured });
 });
 
 app.get("/api/auth/session", (req, res) => {
@@ -157,9 +211,277 @@ app.post("/api/auth/logout", async (req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/api/billing/status", requireUser, async (req, res) => {
+  const user = await billingAccountForRequest(req);
+  res.json({
+    configured: billingConfigured,
+    catalog: billingCatalogForClient(),
+    subscription: subscriptionForClient(user),
+    canManageBilling: req.user.id === "local-owner" || req.team?.role === "owner",
+  });
+});
+
+app.post("/api/billing/checkout", requireUser, async (req, res) => {
+  try {
+    requireStripeBilling();
+    if (req.user.id === "local-owner") return res.status(409).json({ error: "Stripe Checkout is available on the live account-based app." });
+    if (req.team?.role !== "owner") return res.status(403).json({ error: "Only the Business workspace owner can manage centralized billing." });
+    const selectedPlan = billingPlanByKey(req.body?.planKey || "creator_monthly");
+    if (!selectedPlan?.priceId) return res.status(409).json({ error: "That subscription option has not been configured in Stripe yet." });
+    if (req.body?.recurringAuthorizationAccepted !== true && req.body?.monthlyAuthorizationAccepted !== true) {
+      return res.status(400).json({ error: "Accept the recurring-charge authorization before continuing." });
+    }
+    let user = await findUserById(req.user.id);
+    if (!user) return res.status(404).json({ error: "Account not found." });
+    if (new Set(["active", "trialing"]).has(user.subscriptionStatus)) {
+      return res.status(409).json({ error: "This account already has an active subscription. Use the upgrade option or billing portal." });
+    }
+    if (!user.stripeCustomerId) {
+      const customer = await stripe.customers.create({
+        email: user.email,
+        metadata: { klippharmaUserId: user.id },
+      });
+      user = await setStripeCustomerId(user.id, customer.id);
+    }
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      customer: user.stripeCustomerId,
+      client_reference_id: user.id,
+      line_items: [{ price: selectedPlan.priceId, quantity: 1 }],
+      allow_promotion_codes: true,
+      billing_address_collection: "auto",
+      success_url: `${appBaseUrl}/?billing=success`,
+      cancel_url: `${appBaseUrl}/?billing=cancelled`,
+      subscription_data: { metadata: { klippharmaUserId: user.id, klippharmaPlanKey: selectedPlan.key } },
+      metadata: { klippharmaUserId: user.id, klippharmaPlanKey: selectedPlan.key },
+    });
+    await recordBillingAgreement({
+      userId: user.id,
+      agreementType: `${selectedPlan.interval}_subscription_authorization`,
+      statement: `I authorize KlipPharma to charge ${selectedPlan.priceLabel} automatically every ${selectedPlan.interval} until I cancel.`,
+    });
+    res.json({ url: session.url });
+  } catch (error) {
+    billingFailure(res, error);
+  }
+});
+
+app.post("/api/billing/upgrade", requireUser, async (req, res) => {
+  try {
+    requireStripeBilling();
+    if (req.team?.role !== "owner") return res.status(403).json({ error: "Only the workspace owner can change the subscription." });
+    const selectedPlan = billingPlanByKey(req.body?.planKey || "pro_monthly");
+    if (!selectedPlan || !new Set(["pro", "business"]).has(selectedPlan.tier) || !selectedPlan.priceId) {
+      return res.status(409).json({ error: "That upgrade option has not been configured in Stripe yet." });
+    }
+    if (req.body?.recurringAuthorizationAccepted !== true) {
+      return res.status(400).json({ error: "Accept the recurring-charge authorization before upgrading." });
+    }
+    const user = await findUserById(req.user.id);
+    const currentPlan = billingPlanByPriceId(user?.stripePriceId);
+    if (!user?.stripeSubscriptionId || !new Set(["active", "trialing"]).has(user.subscriptionStatus)) {
+      return res.status(409).json({ error: "Start a subscription before using the upgrade flow." });
+    }
+    const ranks = { creator: 1, pro: 2, business: 3 };
+    if (!currentPlan || ranks[selectedPlan.tier] <= ranks[currentPlan.tier]) {
+      return res.status(409).json({ error: "Choose a higher subscription tier to upgrade." });
+    }
+    const subscription = await stripe.subscriptions.retrieve(user.stripeSubscriptionId);
+    const item = subscription.items?.data?.[0];
+    if (!item) return res.status(409).json({ error: "Stripe could not find the current subscription item." });
+    const itemUpdate = { id: item.id, price: selectedPlan.priceId };
+    const creatorToProMonthly = currentPlan.tier === "creator"
+      && selectedPlan.tier === "pro"
+      && selectedPlan.interval === "month";
+    if (creatorToProMonthly) {
+      if (!stripeProUpgradeCouponId) {
+        return res.status(409).json({
+          error: "The 15% first-month Pro upgrade offer has not been configured in Stripe yet.",
+        });
+      }
+      itemUpdate.discounts = [{ coupon: stripeProUpgradeCouponId }];
+    }
+    const updatedSubscription = await stripe.subscriptions.update(user.stripeSubscriptionId, {
+      items: [itemUpdate],
+      proration_behavior: "none",
+      cancel_at_period_end: false,
+      metadata: { ...subscription.metadata, klippharmaUserId: user.id, klippharmaPlanKey: selectedPlan.key },
+    });
+    await recordBillingAgreement({
+      userId: user.id,
+      agreementType: `${currentPlan.tier}_to_${selectedPlan.tier}_upgrade`,
+      subscriptionId: user.stripeSubscriptionId,
+      statement: creatorToProMonthly
+        ? `I authorize an upgrade to ${selectedPlan.priceLabel}. The configured 15% one-time coupon applies to the first Pro monthly renewal.`
+        : `I authorize an upgrade to the recurring ${selectedPlan.priceLabel} ${selectedPlan.name} plan.`,
+    });
+    const updated = await syncSubscriptionRecord(updatedSubscription, user.id);
+    res.json({ subscription: subscriptionForClient(updated) });
+  } catch (error) {
+    billingFailure(res, error);
+  }
+});
+
+app.post("/api/billing/portal", requireUser, async (req, res) => {
+  try {
+    requireStripeBilling();
+    if (req.team?.role !== "owner") return res.status(403).json({ error: "Only the Business workspace owner can open centralized billing." });
+    const user = await billingAccountForRequest(req);
+    if (!user?.stripeCustomerId) return res.status(409).json({ error: "Start a subscription before opening billing management." });
+    const session = await stripe.billingPortal.sessions.create({
+      customer: user.stripeCustomerId,
+      return_url: `${appBaseUrl}/`,
+    });
+    res.json({ url: session.url });
+  } catch (error) {
+    billingFailure(res, error);
+  }
+});
+
+app.post("/api/billing/cancel", requireUser, async (req, res) => {
+  try {
+    requireStripeBilling();
+    if (req.team?.role !== "owner") return res.status(403).json({ error: "Only the Business workspace owner can cancel centralized billing." });
+    if (req.body?.agreementAccepted !== true) {
+      return res.status(400).json({ error: "Confirm the cancellation agreement before continuing." });
+    }
+    const user = await findUserById(req.user.id);
+    if (!user?.stripeSubscriptionId) return res.status(409).json({ error: "No active subscription was found." });
+    const subscription = await stripe.subscriptions.update(user.stripeSubscriptionId, {
+      cancel_at_period_end: true,
+    });
+    await recordBillingAgreement({
+      userId: user.id,
+      agreementType: "cancel_recurring_renewal",
+      subscriptionId: user.stripeSubscriptionId,
+      statement: "I understand my plan remains active through the current paid period, then access ends and future recurring charges stop.",
+    });
+    const updated = await syncSubscriptionRecord(subscription, user.id);
+    res.json({ subscription: subscriptionForClient(updated) });
+  } catch (error) {
+    billingFailure(res, error);
+  }
+});
+
+app.post("/api/billing/resume", requireUser, async (req, res) => {
+  try {
+    requireStripeBilling();
+    if (req.team?.role !== "owner") return res.status(403).json({ error: "Only the Business workspace owner can resume centralized billing." });
+    const user = await findUserById(req.user.id);
+    if (!user?.stripeSubscriptionId || !user.cancelAtPeriodEnd) {
+      return res.status(409).json({ error: "No scheduled cancellation was found." });
+    }
+    const subscription = await stripe.subscriptions.update(user.stripeSubscriptionId, {
+      cancel_at_period_end: false,
+    });
+    const updated = await syncSubscriptionRecord(subscription, user.id);
+    res.json({ subscription: subscriptionForClient(updated) });
+  } catch (error) {
+    billingFailure(res, error);
+  }
+});
+
+app.get("/api/account/dashboard", requireUser, async (req, res) => {
+  const billingUser = await billingAccountForRequest(req);
+  const profileUser = req.user.id === "local-owner" ? req.user : await findUserById(req.user.id);
+  if (req.team?.businessActive) profileUser.planTier = "business";
+  const projects = [...jobs.values()]
+    .filter((job) => canAccessJob(req, job))
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, 50)
+    .map((job) => ({
+      id: job.id,
+      batchId: job.batchId || job.id,
+      originalName: job.originalName,
+      status: job.status,
+      clipCount: job.clips?.length || 0,
+      createdAt: job.createdAt,
+    }));
+  res.json({
+    user: userForClient(profileUser),
+    subscription: subscriptionForClient(billingUser),
+    workspace: req.team ? workspaceForClient(req.team) : null,
+    stats: {
+      uploads: projects.length,
+      clips: projects.reduce((sum, project) => sum + Number(project.clipCount || 0), 0),
+      completed: projects.filter((project) => project.status === "ready").length,
+    },
+    projects,
+  });
+});
+
+app.get("/api/team", requireUser, async (req, res) => {
+  if (!req.team?.businessActive) return res.status(403).json({ error: "A Business subscription is required for team workspaces." });
+  const invitations = await listWorkspaceInvitations(req.team.id);
+  res.json({ workspace: workspaceForClient(req.team), invitations });
+});
+
+app.post("/api/team/invitations", requireUser, async (req, res) => {
+  try {
+    requireTeamAdmin(req);
+    const invitations = await listWorkspaceInvitations(req.team.id);
+    if (req.team.memberCount + invitations.length >= req.team.seatLimit) {
+      return res.status(409).json({ error: "All five Business seats are assigned or reserved by pending invitations." });
+    }
+    const invite = await createWorkspaceInvitation({
+      workspaceId: req.team.id,
+      email: req.body?.email,
+      role: req.body?.role,
+      invitedBy: req.user.id,
+    });
+    res.status(201).json({
+      invitation: { ...invite, inviteUrl: `${appBaseUrl}/?invite=${encodeURIComponent(invite.token)}` },
+    });
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message || "Could not create that invitation." });
+  }
+});
+
+app.post("/api/team/invitations/accept", requireUser, async (req, res) => {
+  try {
+    await acceptWorkspaceInvitation(req.user.id, String(req.body?.token || ""));
+    req.team = await getWorkspaceContext(req.user.id);
+    res.json({ workspace: workspaceForClient(req.team) });
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message || "Could not accept that invitation." });
+  }
+});
+
+app.delete("/api/team/invitations/:id", requireUser, async (req, res) => {
+  try {
+    requireTeamAdmin(req);
+    await revokeWorkspaceInvitation(req.team.id, req.params.id);
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message || "Could not revoke that invitation." });
+  }
+});
+
+app.patch("/api/team/members/:userId", requireUser, async (req, res) => {
+  try {
+    requireTeamAdmin(req);
+    const member = await updateWorkspaceMemberRole(req.team.id, req.params.userId, req.body?.role);
+    res.json({ member });
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message || "Could not update that member." });
+  }
+});
+
+app.delete("/api/team/members/:userId", requireUser, async (req, res) => {
+  try {
+    requireTeamAdmin(req);
+    await removeWorkspaceMember(req.team.id, req.params.userId);
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message || "Could not remove that member." });
+  }
+});
+
 app.use("/api/uploads", requireUser);
 app.use("/api/projects", requireUser);
 app.use("/api/batches", requireUser);
+app.use("/api/youtube", requireUser);
+app.use(["/api/uploads", "/api/projects", "/api/batches", "/api/youtube"], requireWorkspaceEditor);
 
 app.post("/api/uploads/presign", async (req, res) => {
   if (!objectStorageConfigured) return res.status(409).json({ error: "Direct cloud uploads are not enabled on this installation." });
@@ -179,7 +501,7 @@ app.post("/api/uploads/presign", async (req, res) => {
 
 app.get("/api/projects", (req, res) => {
   const projects = [...jobs.values()]
-    .filter((job) => job.userId === req.user.id)
+    .filter((job) => canAccessJob(req, job))
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
     .slice(0, 50)
     .map((job) => ({
@@ -200,7 +522,7 @@ app.get("/api/projects", (req, res) => {
 
 app.delete("/api/batches/:batchId", async (req, res) => {
   const group = [...jobs.values()].filter((job) => (
-    job.userId === req.user.id && String(job.batchId || job.id) === String(req.params.batchId)
+    canAccessJob(req, job) && String(job.batchId || job.id) === String(req.params.batchId)
   ));
   if (!group.length) return res.status(404).json({ error: "Batch not found." });
   if (group.some(jobIsBusy)) return res.status(409).json({ error: "Wait for processing or rendering to finish before deleting this batch." });
@@ -219,7 +541,7 @@ app.delete("/api/projects/:id", async (req, res) => {
   if (jobIsBusy(job)) return res.status(409).json({ error: "Wait for processing or rendering to finish before deleting this video." });
   const batchId = job.batchId || job.id;
   const survivors = [...jobs.values()].filter((item) => (
-    item.userId === req.user.id && item.id !== job.id && String(item.batchId || item.id) === String(batchId)
+    canAccessJob(req, item) && item.id !== job.id && String(item.batchId || item.id) === String(batchId)
   ));
   try {
     await deleteJobPermanently(job);
@@ -256,6 +578,78 @@ app.post("/api/projects", upload.any(), (req, res) => {
   res.status(202).json(result);
 });
 
+app.post("/api/youtube/import", (req, res) => {
+  if (req.body.ownershipConfirmed !== true) {
+    return res.status(400).json({ error: "Confirm that you own this video or have permission to download and edit it." });
+  }
+
+  let source;
+  try {
+    source = normalizeYouTubeSource(req.body.url);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+
+  const activeImport = [...jobs.values()].some((job) => (
+    canAccessJob(req, job) && job.sourceProvider === "youtube" && (job.status === "queued" || job.status === "processing")
+  ));
+  if (activeImport) return res.status(409).json({ error: "Finish the current YouTube import before starting another one." });
+
+  const id = crypto.randomUUID();
+  const job = {
+    id,
+    userId: req.user.id,
+    workspaceId: req.team?.id || null,
+    batchId: id,
+    batchPosition: 1,
+    batchSize: 1,
+    status: "processing",
+    progress: 3,
+    stage: "Connecting to your YouTube source",
+    originalName: "YouTube video · preparing",
+    filePath: null,
+    objectKey: null,
+    mimeType: "video/mp4",
+    sourceProvider: "youtube",
+    sourceVideoId: source.videoId,
+    sourceReady: false,
+    ownershipConfirmedAt: new Date().toISOString(),
+    processingMode: req.body.transcribe === false ? "manual" : "ai",
+    sourceLanguage: normalizeSourceLanguage(req.body.sourceLanguage),
+    translationLanguage: normalizeTranslationLanguage(req.body.translationLanguage),
+    audioTranslation: normalizeAudioTranslation(req.body.audioTranslation, req.body.translationLanguage),
+    dubVoice: normalizeDubVoice(req.body.dubVoice),
+    contentType: normalizeCreatorMode(req.body.contentType),
+    clipLength: normalizeClipLength(req.body.clipLength),
+    createMontage: false,
+    watermarkText: normalizeWatermarkText(req.body.watermarkText),
+    watermarkPosition: normalizeOverlayPosition(req.body.watermarkPosition),
+    planTier: normalizePlanTier(req.user.planTier),
+    klipPharmaWatermarkRequired: !hasPaidPlan(req.user.planTier),
+    audience: req.body.audience || "General audience",
+    goal: req.body.goal || "High-retention social clips",
+    platform: req.body.platform || "Instagram Reels",
+    createdAt: new Date().toISOString(),
+  };
+  jobs.set(id, job);
+  persistJob(job);
+
+  importYouTubeSource(job, source.canonicalUrl)
+    .catch((error) => {
+      console.error("YouTube import failed:", error);
+      removeYouTubeWorkingFiles(job.id);
+      Object.assign(job, {
+        status: "failed",
+        progress: 100,
+        stage: "YouTube import failed",
+        error: friendlyYouTubeError(error),
+      });
+      persistJob(job);
+    });
+
+  return res.status(202).json({ id, batchId: id, ids: [id], sourceProvider: "youtube" });
+});
+
 app.post("/api/projects/cloud", async (req, res) => {
   if (!objectStorageConfigured) return res.status(409).json({ error: "Cloud object storage is not configured." });
   const sources = Array.isArray(req.body.sources) ? req.body.sources.slice(0, 10) : [];
@@ -287,6 +681,7 @@ function createProjectBatch(req, files, fileOptions = []) {
     const job = {
       id,
       userId: req.user.id,
+      workspaceId: req.team?.id || null,
       batchId,
       batchPosition: index + 1,
       batchSize: files.length,
@@ -392,7 +787,7 @@ app.get("/api/projects/:id", (req, res) => {
   };
   safe.planTier = normalizePlanTier(req.user.planTier);
   safe.klipPharmaWatermarkRequired = !hasPaidPlan(req.user.planTier);
-  if (!isAudioOnly(job.filePath)) safe.sourceUrl = `/api/projects/${job.id}/source`;
+  if (job.filePath && !isAudioOnly(job.filePath)) safe.sourceUrl = `/api/projects/${job.id}/source`;
   if (safe.montage && job.montageAudioPath && fs.existsSync(job.montageAudioPath)) {
     safe.montage.audioName = job.montageAudioName || "Added sound";
     safe.montage.audioUrl = `/api/projects/${job.id}/montage/audio`;
@@ -492,7 +887,7 @@ app.post("/api/projects/:id/montage/render", (req, res) => {
     return res.status(409).json({ error: "Wait for the current Auto-Mix render to finish." });
   }
   const group = [...jobs.values()]
-    .filter((job) => job.batchId === owner.batchId && job.userId === req.user.id)
+    .filter((job) => job.batchId === owner.batchId && canAccessJob(req, job))
     .sort((a, b) => Number(a.batchPosition || 0) - Number(b.batchPosition || 0));
   let segments;
   try {
@@ -565,6 +960,7 @@ app.patch("/api/projects/:id/clips/:clipId", (req, res) => {
     clip.memePosition = normalizeMemePosition(req.body.memePosition || clip.memePosition);
     clip.memeFontSize = normalizeMemeFontSize(req.body.memeFontSize || clip.memeFontSize);
     clip.memeTextColor = normalizeMemeTextColor(req.body.memeTextColor || clip.memeTextColor);
+    clip.memeBoxColor = normalizeMemeBoxColor(req.body.memeBoxColor || clip.memeBoxColor);
     clip.memeBackground = normalizeMemeBackground(req.body.memeBackground || clip.memeBackground);
     const selectedDuration = clip.end - clip.start;
     clip.memeStart = normalizeAudioSeconds(req.body.memeStart, clip.memeStart ?? 0, selectedDuration);
@@ -677,6 +1073,89 @@ app.post("/api/projects/:id/clips/:clipId/feedback", (req, res) => {
   persistJob(job);
   res.json({ ok: true });
 });
+
+async function importYouTubeSource(job, canonicalUrl) {
+  const outputTemplate = path.join(uploadDir, `${job.id}.%(ext)s`);
+  const args = [
+    "--no-playlist",
+    "--no-warnings",
+    "--newline",
+    "--max-filesize", "1024M",
+    "--match-filter", "duration <= 14400 & !is_live",
+    "--format", "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/b[height<=1080][ext=mp4]/bv*[height<=1080]+ba/b[height<=1080]",
+    "--merge-output-format", "mp4",
+    "--remux-video", "mp4",
+    "--ffmpeg-location", ffmpegPath || "ffmpeg",
+    "--output", outputTemplate,
+    "--print", "after_move:%(title)s",
+    "--print", "after_move:%(filepath)s",
+    canonicalUrl,
+  ];
+  const result = await runYouTubeDownload(process.env.YT_DLP_PATH || "yt-dlp", args, job);
+  const candidates = fs.readdirSync(uploadDir)
+    .filter((name) => name.startsWith(`${job.id}.`) && !name.endsWith(".part") && !name.endsWith(".ytdl"))
+    .map((name) => path.join(uploadDir, name))
+    .filter((filePath) => fs.statSync(filePath).isFile());
+  const downloaded = candidates.sort((a, b) => fs.statSync(b).size - fs.statSync(a).size)[0];
+  if (!downloaded) throw new Error("yt-dlp completed without producing a video file.");
+  const size = fs.statSync(downloaded).size;
+  if (!size || size > 1024 * 1024 * 1024) throw new Error("The imported video must be smaller than 1 GB.");
+
+  const printed = result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const title = sanitizeYouTubeTitle(printed.find((line) => !path.isAbsolute(line)) || "YouTube video");
+  job.filePath = downloaded;
+  job.mimeType = mimeTypeFor(downloaded);
+  job.originalName = `${title}${path.extname(downloaded).toLowerCase() || ".mp4"}`;
+  job.sourceReady = true;
+  Object.assign(job, { status: "queued", progress: 48, stage: "Source MP4 ready · waiting for the klip processor" });
+  persistJob(job);
+  enqueueProject(job);
+}
+
+function runYouTubeDownload(command, args, job) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let lastSavedProgress = 0;
+    child.stdout.on("data", (chunk) => { stdout = (stdout + chunk).slice(-12000); });
+    child.stderr.on("data", (chunk) => {
+      const text = String(chunk);
+      stderr = (stderr + text).slice(-12000);
+      const match = text.match(/\[download\]\s+([\d.]+)%/);
+      if (!match) return;
+      const percent = Math.max(0, Math.min(100, Number(match[1]) || 0));
+      const progress = 5 + Math.round(percent * 0.4);
+      if (progress < lastSavedProgress + 3) return;
+      lastSavedProgress = progress;
+      job.progress = progress;
+      job.stage = `Downloading your source MP4 · ${Math.round(percent)}%`;
+      persistJob(job);
+    });
+    child.on("error", reject);
+    child.on("close", (code) => code === 0
+      ? resolve({ stdout, stderr })
+      : reject(new Error(`yt-dlp exited ${code}: ${stderr}`)));
+  });
+}
+
+function removeYouTubeWorkingFiles(jobId) {
+  for (const name of fs.readdirSync(uploadDir)) {
+    if (name.startsWith(`${jobId}.`)) removeLocalFile(path.join(uploadDir, name), uploadDir);
+  }
+}
+
+function friendlyYouTubeError(error) {
+  const message = String(error?.message || "");
+  if (error?.code === "ENOENT") return "The YouTube importer is not installed on this server yet.";
+  if (/private video|members-only|age.?restricted|sign in|cookies|not available|unavailable/i.test(message)) {
+    return "YouTube would not release this source. Private, protected, age-restricted, or account-only videos must be downloaded from YouTube Studio first.";
+  }
+  if (/larger than|filesize|max-filesize|duration|live/i.test(message)) {
+    return "This source is too large, longer than four hours, or is a live stream. Use a finished video under 1 GB.";
+  }
+  return "KlipPharma could not import that YouTube video. Confirm it is your public or unlisted upload, or download it from YouTube Studio first.";
+}
 
 async function ensureLocalSource(job) {
   if (job.filePath && fs.existsSync(job.filePath) && fs.statSync(job.filePath).size > 0) return job.filePath;
@@ -1088,18 +1567,13 @@ function writeMemeHeadlineSubtitle(destination, text, duration, clip) {
   const fontSizes = { small: 46, medium: 62, large: 78 };
   const fontSize = fontSizes[normalizeMemeFontSize(clip.memeFontSize)] || fontSizes.medium;
   const color = normalizeMemeTextColor(clip.memeTextColor);
+  const boxColor = normalizeMemeBoxColor(clip.memeBoxColor);
   const background = normalizeMemeBackground(clip.memeBackground);
-  const solidStyles = {
-    white: { primary: "&H000B0F0A", back: "&H00FFFFFF" },
-    lime: { primary: "&H000B0F0A", back: "&H003CEFB8" },
-    black: { primary: "&H00FFFFFF", back: "&H00080B08" },
-  };
-  const plainColours = { white: "&H00FFFFFF", lime: "&H003CEFB8", black: "&H00000000" };
-  const solid = solidStyles[color] || solidStyles.white;
-  const primary = background === "solid" ? solid.primary : (plainColours[color] || plainColours.white);
-  const back = background === "solid" ? solid.back : "&H00000000";
-  const borderStyle = background === "solid" ? 3 : 1;
-  const outline = background === "none" ? 4 : background === "transparent" ? 3 : 0;
+  const primary = cssHexToAss(color);
+  const boxHex = boxColor === "white" ? "#ffffff" : "#000000";
+  const back = background === "none" ? "&H00000000" : cssHexToAss(boxHex, background === "transparent" ? "66" : "00");
+  const borderStyle = background === "none" ? 1 : 3;
+  const outline = background === "none" ? 4 : 0;
   const safeText = normalizeMemeHeadline(text)
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -1316,8 +1790,22 @@ function normalizeMemeFontSize(value = "medium") {
   return new Set(["small", "medium", "large"]).has(value) ? value : "medium";
 }
 
-function normalizeMemeTextColor(value = "white") {
-  return new Set(["white", "lime", "black"]).has(value) ? value : "white";
+function normalizeMemeTextColor(value = "#ffffff") {
+  const legacy = { white: "#ffffff", lime: "#b8ef3c", black: "#000000" };
+  const color = legacy[String(value || "").toLowerCase()] || String(value || "").trim();
+  return /^#[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : "#ffffff";
+}
+
+function normalizeMemeBoxColor(value = "black") {
+  return value === "white" ? "white" : "black";
+}
+
+function cssHexToAss(value, alpha = "00") {
+  const color = normalizeMemeTextColor(value);
+  const red = color.slice(1, 3);
+  const green = color.slice(3, 5);
+  const blue = color.slice(5, 7);
+  return `&H${alpha}${blue}${green}${red}`.toUpperCase();
 }
 
 function normalizeMemeBackground(value = "solid") {
@@ -1338,11 +1826,148 @@ function hasPaidPlan(value) {
 }
 
 function hasCreativeAccess(value) {
-  return proFeaturesOpen || hasPaidPlan(value);
+  return proFeaturesOpen || new Set(["pro", "studio", "business"]).has(normalizePlanTier(value));
 }
 
 function userForClient(user) {
-  return user ? { ...user, creativeFeaturesOpen: hasCreativeAccess(user.planTier) } : null;
+  if (!user) return null;
+  const {
+    stripeCustomerId: _stripeCustomerId,
+    stripeSubscriptionId: _stripeSubscriptionId,
+    stripePriceId: _stripePriceId,
+    ...safeUser
+  } = user;
+  return { ...safeUser, creativeFeaturesOpen: hasCreativeAccess(user.planTier) };
+}
+
+async function handleStripeEvent(event) {
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object;
+    if (!session.subscription) return;
+    const subscription = await stripe.subscriptions.retrieve(
+      typeof session.subscription === "string" ? session.subscription : session.subscription.id,
+    );
+    await syncSubscriptionRecord(subscription, session.client_reference_id || session.metadata?.klippharmaUserId);
+    return;
+  }
+  if (new Set([
+    "customer.subscription.created",
+    "customer.subscription.updated",
+    "customer.subscription.deleted",
+  ]).has(event.type)) {
+    await syncSubscriptionRecord(event.data.object);
+  }
+}
+
+async function syncSubscriptionRecord(subscription, fallbackUserId = null) {
+  const customerId = typeof subscription.customer === "string"
+    ? subscription.customer
+    : subscription.customer?.id || null;
+  const item = subscription.items?.data?.[0] || null;
+  const plan = billingPlanByPriceId(item?.price?.id);
+  const currentPeriodEnd = subscription.current_period_end || item?.current_period_end || null;
+  return syncStripeSubscription({
+    userId: subscription.metadata?.klippharmaUserId || fallbackUserId || null,
+    customerId,
+    subscriptionId: subscription.id,
+    priceId: item?.price?.id || null,
+    planTier: plan?.tier || "free",
+    status: subscription.status || "inactive",
+    currentPeriodEnd: currentPeriodEnd ? new Date(currentPeriodEnd * 1000) : null,
+    cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
+  });
+}
+
+function billingPlans() {
+  return [
+    {
+      key: "creator_monthly", tier: "creator", name: "Creator", interval: "month",
+      priceLabel: String(process.env.STRIPE_CREATOR_MONTHLY_PRICE_LABEL || process.env.STRIPE_PRO_PRICE_LABEL || "$29/month"),
+      priceId: stripeCreatorMonthlyPriceId, headline: "Start publishing consistently",
+    },
+    {
+      key: "creator_yearly", tier: "creator", name: "Creator Annual", interval: "year",
+      priceLabel: String(process.env.STRIPE_CREATOR_YEARLY_PRICE_LABEL || "$290/year"),
+      priceId: stripeCreatorYearlyPriceId, headline: "Two months free",
+    },
+    {
+      key: "pro_monthly", tier: "pro", name: "Pro", interval: "month",
+      priceLabel: String(process.env.STRIPE_PRO_MONTHLY_PRICE_LABEL || "$79/month"),
+      priceId: stripeProMonthlyPriceId, headline: "Full creative studio",
+    },
+    {
+      key: "pro_yearly", tier: "pro", name: "Pro Annual", interval: "year",
+      priceLabel: String(process.env.STRIPE_PRO_YEARLY_PRICE_LABEL || "$790/year"),
+      priceId: stripeProYearlyPriceId, headline: "Two months free",
+    },
+    {
+      key: "business_monthly", tier: "business", name: "Business", interval: "month",
+      priceLabel: String(process.env.STRIPE_BUSINESS_MONTHLY_PRICE_LABEL || "$199/month"),
+      priceId: stripeBusinessMonthlyPriceId, headline: "Five-seat team workspace",
+    },
+    {
+      key: "business_yearly", tier: "business", name: "Business Annual", interval: "year",
+      priceLabel: String(process.env.STRIPE_BUSINESS_YEARLY_PRICE_LABEL || "$1,990/year"),
+      priceId: stripeBusinessYearlyPriceId, headline: "Two months free · five seats",
+    },
+  ];
+}
+
+function billingPlanByKey(key) {
+  return billingPlans().find((plan) => plan.key === String(key || "")) || null;
+}
+
+function billingPlanByPriceId(priceId) {
+  return billingPlans().find((plan) => plan.priceId && plan.priceId === String(priceId || "")) || null;
+}
+
+function billingCatalogForClient() {
+  return billingPlans().map(({ priceId, ...plan }) => ({
+    ...plan,
+    configured: Boolean(priceId),
+    autoRenews: true,
+    offer: plan.key === "pro_monthly"
+      ? "Creator members receive 15% off their first Pro month."
+      : plan.interval === "year" ? "Discounted annual billing." : null,
+  }));
+}
+
+function subscriptionForClient(user) {
+  const status = user?.subscriptionStatus || "inactive";
+  const matchedPlan = billingPlanByPriceId(user?.stripePriceId);
+  const planTier = matchedPlan?.tier || normalizePlanTier(user?.planTier);
+  return {
+    planTier,
+    planKey: matchedPlan?.key || null,
+    planName: matchedPlan?.name || (
+      planTier === "free" ? "Free"
+        : planTier === "creator" ? "Creator"
+          : planTier === "business" ? "Business"
+            : "Pro"
+    ),
+    interval: matchedPlan?.interval || null,
+    priceLabel: matchedPlan?.priceLabel || null,
+    status,
+    active: new Set(["active", "trialing"]).has(status),
+    currentPeriodEnd: user?.subscriptionCurrentPeriodEnd || null,
+    cancelAtPeriodEnd: Boolean(user?.cancelAtPeriodEnd),
+  };
+}
+
+function requireStripeBilling() {
+  if (billingConfigured) return;
+  const error = new Error("Secure recurring billing has not been configured yet.");
+  error.statusCode = 503;
+  throw error;
+}
+
+function billingFailure(res, error) {
+  const status = Number(error?.statusCode || error?.status || 500);
+  if (status >= 500) console.error("Billing request failed:", error);
+  const message = status < 500
+    ? error.message
+    : "The secure billing service could not complete that request. Please try again.";
+  res.status(status).json({ error: message });
 }
 
 function normalizeMixerPercent(value, fallback = 100) {
@@ -1844,6 +2469,14 @@ async function attachUser(req, res, next) {
       return next();
     }
     req.user = await findSessionUser(readCookie(req, "klippharma_session"));
+    if (req.user) {
+      req.team = await getWorkspaceContext(req.user.id);
+      if (req.team?.businessActive) {
+        req.user.planTier = "business";
+        req.user.workspaceRole = req.team.role;
+        req.user.workspaceId = req.team.id;
+      }
+    }
     return next();
   } catch (error) {
     return next(error);
@@ -1857,13 +2490,60 @@ function requireUser(req, res, next) {
 
 function ownedJob(req, id) {
   const job = jobs.get(id);
-  return job?.userId === req.user?.id ? job : null;
+  return canAccessJob(req, job) ? job : null;
+}
+
+function canAccessJob(req, job) {
+  if (!job || !req.user) return false;
+  if (job.userId === req.user.id) return true;
+  return Boolean(req.team?.businessActive && req.team.memberIds?.includes(job.userId));
+}
+
+function requireWorkspaceEditor(req, res, next) {
+  if (new Set(["GET", "HEAD", "OPTIONS"]).has(req.method)) return next();
+  if (!req.team?.businessActive || new Set(["owner", "admin", "editor"]).has(req.team.role)) return next();
+  return res.status(403).json({ error: "Viewers can review shared projects but cannot change them." });
+}
+
+function requireTeamAdmin(req) {
+  if (!req.team?.businessActive) {
+    const error = new Error("A Business subscription is required for team management.");
+    error.status = 403;
+    throw error;
+  }
+  if (!new Set(["owner", "admin"]).has(req.team.role)) {
+    const error = new Error("Only workspace owners and admins can manage the team.");
+    error.status = 403;
+    throw error;
+  }
+}
+
+async function billingAccountForRequest(req) {
+  if (req.user.id === "local-owner") return req.user;
+  if (req.team?.businessActive && req.team.owner) return req.team.owner;
+  return findUserById(req.user.id);
+}
+
+function workspaceForClient(team) {
+  if (!team) return null;
+  return {
+    id: team.id,
+    name: team.name,
+    role: team.role,
+    ownerUserId: team.ownerUserId,
+    businessActive: team.businessActive,
+    memberCount: team.memberCount,
+    seatLimit: team.seatLimit,
+    canManageTeam: new Set(["owner", "admin"]).has(team.role),
+    canManageBilling: team.role === "owner",
+    members: team.members,
+  };
 }
 
 function authorizeExport(req, res, next) {
   const filename = path.basename(req.path);
   const allowed = [...jobs.values()].some((job) => (
-    job.userId === req.user.id && (filename.startsWith(`${job.id}-`) || filename.startsWith(`${job.batchId}-`))
+    canAccessJob(req, job) && (filename.startsWith(`${job.id}-`) || filename.startsWith(`${job.batchId}-`))
   ));
   if (!allowed) return res.status(404).json({ error: "Export not found." });
   return next();

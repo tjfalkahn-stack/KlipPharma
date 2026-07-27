@@ -7,7 +7,8 @@ FROM node:22-bookworm-slim
 ENV NODE_ENV=production PORT=3100
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gosu \
+    && apt-get install -y --no-install-recommends ffmpeg gosu python3 python3-pip \
+    && python3 -m pip install --no-cache-dir --break-system-packages "yt-dlp[default]==2026.7.4" \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY --chown=node:node . .

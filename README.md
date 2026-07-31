@@ -4,6 +4,11 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
+## Version 0.25.1 — Pro batch entitlement fix
+
+- The 1–10 finished-klip selector now honors the existing beta Pro-feature flag for owner testing.
+- When `PRO_FEATURES_OPEN=false`, the selector remains restricted to Pro, Studio, and Business accounts.
+
 ## Version 0.25.0 — Transparent progress + Pro batch output
 
 - Shows byte-level upload progress for every local or direct-cloud source.

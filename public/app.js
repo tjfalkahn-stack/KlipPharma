@@ -71,7 +71,8 @@ function hasCreativeAccess(user = currentUser) {
 }
 
 function hasProBatchOutput(user = currentUser) {
-  return new Set(["pro", "studio", "business"]).has(String(user?.planTier || "").trim().toLowerCase());
+  return user?.creativeFeaturesOpen === true
+    || new Set(["pro", "studio", "business"]).has(String(user?.planTier || "").trim().toLowerCase());
 }
 
 function paintOutputCountPolicy() {

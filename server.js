@@ -1871,7 +1871,7 @@ function hasPaidPlan(value) {
 }
 
 function hasProBatchOutput(value) {
-  return new Set(["pro", "studio", "business"]).has(normalizePlanTier(value));
+  return proFeaturesOpen || new Set(["pro", "studio", "business"]).has(normalizePlanTier(value));
 }
 
 function normalizeRequestedOutputCount(value, planTier) {

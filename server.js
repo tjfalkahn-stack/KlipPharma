@@ -795,9 +795,15 @@ app.get("/api/projects/:id", (req, res) => {
       if (clip.memeImagePath && fs.existsSync(clip.memeImagePath)) {
         safeClip.memeImageUrl = `/api/projects/${job.id}/clips/${clip.id}/overlay-image`;
       }
+      if (clip.audioPath && fs.existsSync(clip.audioPath)) {
+        safeClip.audioUrl = `/api/projects/${job.id}/clips/${clip.id}/audio`;
+        safeClip.audioName = clip.audioName || "Added sound";
+      }
       delete safeClip.memeImagePath;
       delete safeClip.memeImageMime;
       delete safeClip.memeImageName;
+      delete safeClip.audioPath;
+      delete safeClip.audioMime;
       return safeClip;
     }),
   };
@@ -972,6 +978,16 @@ app.patch("/api/projects/:id/clips/:clipId", (req, res) => {
   if (typeof req.body.watermarkText === "string") clip.watermarkText = normalizeWatermarkText(req.body.watermarkText);
   if (req.body.watermarkPosition) clip.watermarkPosition = normalizeOverlayPosition(req.body.watermarkPosition);
   clip.focusX = normalizeFocusX(req.body.focusX, clip.focusX ?? 50);
+  clip.sourceVolume = normalizeMixerPercent(req.body.sourceVolume, clip.sourceVolume ?? (job.audioTranslation === "dubbed" ? 16 : 100));
+  clip.addedAudioVolume = normalizeMixerPercent(req.body.addedAudioVolume, clip.addedAudioVolume ?? 35);
+  clip.audioStart = normalizeAudioSeconds(req.body.audioStart, clip.audioStart ?? 0, 90);
+  clip.audioFadeIn = normalizeAudioSeconds(req.body.audioFadeIn, clip.audioFadeIn ?? 1, 10);
+  clip.audioFadeOut = normalizeAudioSeconds(req.body.audioFadeOut, clip.audioFadeOut ?? 1, 10);
+  if (typeof req.body.audioLoop === "boolean") clip.audioLoop = req.body.audioLoop;
+  if (typeof req.body.autoDuck === "boolean") clip.autoDuck = req.body.autoDuck;
+  clip.translationLanguage = normalizeTranslationLanguage(req.body.translationLanguage || clip.translationLanguage || job.translationLanguage);
+  clip.audioTranslation = normalizeAudioTranslation(req.body.audioTranslation ?? clip.audioTranslation ?? job.audioTranslation, clip.translationLanguage);
+  clip.dubVoice = normalizeDubVoice(req.body.dubVoice || clip.dubVoice || job.dubVoice);
   if (hasCreativeAccess(req.user.planTier)) {
     if (typeof req.body.memeEnabled === "boolean") clip.memeEnabled = req.body.memeEnabled;
     if (typeof req.body.memeHeadline === "string") clip.memeHeadline = normalizeMemeHeadline(req.body.memeHeadline);
@@ -996,10 +1012,62 @@ app.patch("/api/projects/:id/clips/:clipId", (req, res) => {
   if (clip.memeImagePath && fs.existsSync(clip.memeImagePath)) {
     safeClip.memeImageUrl = `/api/projects/${job.id}/clips/${clip.id}/overlay-image`;
   }
+  if (clip.audioPath && fs.existsSync(clip.audioPath)) {
+    safeClip.audioUrl = `/api/projects/${job.id}/clips/${clip.id}/audio`;
+    safeClip.audioName = clip.audioName || "Added sound";
+  }
   delete safeClip.memeImagePath;
   delete safeClip.memeImageMime;
   delete safeClip.memeImageName;
+  delete safeClip.audioPath;
+  delete safeClip.audioMime;
   res.json({ clip: safeClip });
+});
+
+app.get("/api/projects/:id/clips/:clipId/audio", (req, res) => {
+  const job = ownedJob(req, req.params.id);
+  const clip = job?.clips?.find((item) => item.id === req.params.clipId);
+  if (!clip?.audioPath || !fs.existsSync(clip.audioPath)) return res.status(404).json({ error: "Added sound not found." });
+  res.type(clip.audioMime || mimeTypeFor(clip.audioPath));
+  res.sendFile(clip.audioPath);
+});
+
+app.post("/api/projects/:id/clips/:clipId/audio", upload.single("audio"), (req, res) => {
+  const job = ownedJob(req, req.params.id);
+  const clip = job?.clips?.find((item) => item.id === req.params.clipId);
+  if (!job || !clip) {
+    removeLocalFile(req.file?.path, uploadDir);
+    return res.status(404).json({ error: "Klip not found." });
+  }
+  const extension = path.extname(req.file?.originalname || "").toLowerCase();
+  if (!req.file || !new Set([".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"]).has(extension)) {
+    removeLocalFile(req.file?.path, uploadDir);
+    return res.status(400).json({ error: "Choose an MP3, WAV, M4A, AAC, OGG, or FLAC audio file." });
+  }
+  removeStoredClipAudio(clip);
+  clip.audioPath = req.file.path;
+  clip.audioName = String(req.file.originalname || "Added sound").slice(0, 180);
+  clip.audioMime = req.file.mimetype;
+  clip.renderStatus = "idle";
+  delete clip.downloadUrl;
+  delete clip.renderError;
+  persistJob(job);
+  res.status(201).json({
+    audioName: clip.audioName,
+    audioUrl: `/api/projects/${job.id}/clips/${clip.id}/audio`,
+  });
+});
+
+app.delete("/api/projects/:id/clips/:clipId/audio", (req, res) => {
+  const job = ownedJob(req, req.params.id);
+  const clip = job?.clips?.find((item) => item.id === req.params.clipId);
+  if (!job || !clip) return res.status(404).json({ error: "Klip not found." });
+  removeStoredClipAudio(clip);
+  clip.renderStatus = "idle";
+  delete clip.downloadUrl;
+  delete clip.renderError;
+  persistJob(job);
+  res.json({ ok: true });
 });
 
 app.get("/api/projects/:id/clips/:clipId/overlay-image", (req, res) => {
@@ -1218,16 +1286,27 @@ async function ensureLocalSource(job) {
 
 async function processProject(job) {
   await ensureLocalSource(job);
-  const manualMode = job.processingMode === "manual";
+  const command = ffmpegPath || "ffmpeg";
+  let manualMode = job.processingMode === "manual";
+  const sourceHasAudio = manualMode ? true : await probeHasAudio(command, job.filePath);
+  if (!manualMode && !sourceHasAudio) {
+    // Camera-roll exports, screen recordings, and generated visuals can legally
+    // contain video only. There is nothing to transcribe, so keep the source
+    // usable and open it in the visual/manual editor instead of failing FFmpeg.
+    manualMode = true;
+    job.processingMode = "manual";
+    job.silentSource = true;
+  }
   Object.assign(job, {
     status: "processing",
     progress: 10,
     phase: manualMode ? "prepare" : "audio",
-    stage: manualMode ? "Preparing your manual editor" : "Extracting clear audio from your video",
+    stage: job.silentSource
+      ? "No audio track detected · preparing the visual editor"
+      : manualMode ? "Preparing your manual editor" : "Extracting clear audio from your video",
   });
   persistJob(job);
   const audioPath = path.join(uploadDir, `${job.id}-audio.mp3`);
-  const command = ffmpegPath || "ffmpeg";
   const audioOnly = isAudioOnly(job.filePath);
   const previewTask = audioOnly ? Promise.resolve(false) : generatePreview(job);
   const durationTask = probeDuration(command, job.filePath).catch(() => 0);
@@ -1241,7 +1320,7 @@ async function processProject(job) {
   job.duration = Math.max(1, Number(mediaDuration) || 1);
   job.progress = 24;
   job.phase = "prepare";
-  job.stage = manualMode ? "Source preview ready" : "Audio and preview prepared";
+  job.stage = job.silentSource ? "Silent source preview ready" : manualMode ? "Source preview ready" : "Audio and preview prepared";
   persistJob(job);
 
   if (manualMode) {
@@ -1256,7 +1335,9 @@ async function processProject(job) {
       title: "Manual Cut",
       hook: "Preview the source and choose the exact moment you want.",
       caption: "",
-      whyChosen: "AI transcription is off for this video. Use the start and end controls to create your own klip without transcription charges.",
+      whyChosen: job.silentSource
+        ? "This source has no audio track, so there is nothing to transcribe. Use the visual editor to set the cut, add music or sounds, and create your klip."
+        : "AI transcription is off for this video. Use the start and end controls to create your own klip without transcription charges.",
       scores: {},
       overallScore: null,
       captionsEnabled: false,
@@ -1266,10 +1347,25 @@ async function processProject(job) {
       watermarkText: job.watermarkText || "",
       watermarkPosition: job.watermarkPosition || "top-right",
       focusX: 50,
+      sourceVolume: job.audioTranslation === "dubbed" ? 16 : 100,
+      addedAudioVolume: 35,
+      audioStart: 0,
+      audioFadeIn: 1,
+      audioFadeOut: 1,
+      audioLoop: true,
+      autoDuck: true,
+      translationLanguage: job.translationLanguage,
+      audioTranslation: job.audioTranslation,
+      dubVoice: job.dubVoice,
       renderStatus: "idle",
       feedback: null,
     }];
-    Object.assign(job, { status: "ready", progress: 100, phase: "ready", stage: "Manual editor ready" });
+    Object.assign(job, {
+      status: "ready",
+      progress: 100,
+      phase: "ready",
+      stage: job.silentSource ? "Visual editor ready · add audio when you want" : "Manual editor ready",
+    });
     persistJob(job);
     return;
   }
@@ -1310,6 +1406,16 @@ async function processProject(job) {
     watermarkText: job.watermarkText || "",
     watermarkPosition: job.watermarkPosition || "top-right",
     focusX: 50,
+    sourceVolume: job.audioTranslation === "dubbed" ? 16 : 100,
+    addedAudioVolume: 35,
+    audioStart: 0,
+    audioFadeIn: 1,
+    audioFadeOut: 1,
+    audioLoop: true,
+    autoDuck: true,
+    translationLanguage: job.translationLanguage,
+    audioTranslation: job.audioTranslation,
+    dubVoice: job.dubVoice,
     renderStatus: "idle",
     feedback: null,
   }));
@@ -1491,14 +1597,30 @@ async function renderClip(job, clip, planTier = job.planTier) {
       filter = appendMemeImage(filter, clip, duration);
     }
     const audioBitrate = job.contentType === "artist" ? "256k" : "160k";
-    const voiceText = customCaptionText || relevant.map((segment) => segment.text).join(" ").trim();
-    const dubPath = job.audioTranslation === "dubbed" && job.translationLanguage !== "original" && voiceText
-      ? await synthesizeTranslatedVoice(voiceText, job.dubVoice, tempDir, "voiceover")
+    const translationLanguage = normalizeTranslationLanguage(clip.translationLanguage || job.translationLanguage);
+    const audioTranslation = normalizeAudioTranslation(clip.audioTranslation ?? job.audioTranslation, translationLanguage);
+    const dubVoice = normalizeDubVoice(clip.dubVoice || job.dubVoice);
+    const originalRelevant = (job.originalSegments || job.segments || [])
+      .filter((segment) => segment.end > clip.start && segment.start < clip.end);
+    let voiceText = customCaptionText;
+    if (!voiceText && audioTranslation === "dubbed") {
+      if (translationLanguage === normalizeTranslationLanguage(job.translationLanguage) && job.translationLanguage !== "original") {
+        voiceText = relevant.map((segment) => segment.text).join(" ").trim();
+      } else {
+        const translated = await translateSegments(originalRelevant, translationLanguage);
+        voiceText = translated.map((segment) => segment.text).join(" ").trim();
+      }
+    }
+    const dubPath = audioTranslation === "dubbed" && translationLanguage !== "original" && voiceText
+      ? await synthesizeTranslatedVoice(voiceText, dubVoice, tempDir, "voiceover")
       : null;
+    const hasSourceAudio = await probeHasAudio(ffmpegPath || "ffmpeg", job.filePath);
+    const hasAddedAudio = Boolean(clip.audioPath && fs.existsSync(clip.audioPath));
+    const sourceVolume = normalizeMixerPercent(clip.sourceVolume, dubPath ? 16 : 100) / 100;
+    const basePath = hasAddedAudio ? path.join(tempDir, "base.mp4") : outputPath;
     if (dubPath) {
-      const hasSourceAudio = await probeHasAudio(ffmpegPath || "ffmpeg", job.filePath);
-      const audioFilter = hasSourceAudio
-        ? `[0:a]volume=0.16[bed];[1:a]volume=1,apad,atrim=0:${duration}[voice];[bed][voice]amix=inputs=2:duration=first:normalize=0[a]`
+      const audioFilter = hasSourceAudio && sourceVolume > 0
+        ? `[0:a]volume=${sourceVolume}[bed];[1:a]volume=1,apad,atrim=0:${duration}[voice];[bed][voice]amix=inputs=2:duration=first:normalize=0[a]`
         : `[1:a]volume=1,apad,atrim=0:${duration}[a]`;
       await run(ffmpegPath || "ffmpeg", [
         "-y", "-fflags", "+genpts", "-ss", String(clip.start), "-i", job.filePath, "-i", dubPath,
@@ -1506,17 +1628,62 @@ async function renderClip(job, clip, planTier = job.planTier) {
         "-map", "0:v:0", "-map", "[a]", "-vf", filter,
         ...quickTimeVideoArgs("23"), ...quickTimeAudioArgs(audioBitrate),
         "-sn", "-dn", "-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "2048",
-        "-movflags", "+faststart", outputPath,
+        "-movflags", "+faststart", basePath,
+      ]);
+    } else if (hasSourceAudio) {
+      const audioArgs = sourceVolume === 1
+        ? ["-map", "0:a:0?"]
+        : ["-filter_complex", `[0:a]volume=${sourceVolume}[a]`, "-map", "[a]"];
+      await run(ffmpegPath || "ffmpeg", [
+        "-y", "-fflags", "+genpts", "-ss", String(clip.start), "-i", job.filePath,
+        "-t", String(duration),
+        "-map", "0:v:0", ...audioArgs, "-vf", filter,
+        ...quickTimeVideoArgs("23"), ...quickTimeAudioArgs(audioBitrate),
+        "-sn", "-dn", "-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "2048",
+        "-movflags", "+faststart", basePath,
       ]);
     } else {
       await run(ffmpegPath || "ffmpeg", [
         "-y", "-fflags", "+genpts", "-ss", String(clip.start), "-i", job.filePath,
+        "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
         "-t", String(duration),
-        "-map", "0:v:0", "-map", "0:a:0?", "-vf", filter,
+        "-map", "0:v:0", "-map", "1:a:0", "-vf", filter,
         ...quickTimeVideoArgs("23"),
         ...quickTimeAudioArgs(audioBitrate),
+        "-shortest",
         "-sn", "-dn", "-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "2048",
-        "-movflags", "+faststart", outputPath,
+        "-movflags", "+faststart", basePath,
+      ]);
+    }
+    if (hasAddedAudio) {
+      const addedAudioVolume = normalizeMixerPercent(clip.addedAudioVolume, 35) / 100;
+      const audioStart = Math.min(Math.max(0, normalizeAudioSeconds(clip.audioStart, 0, 90)), Math.max(0, duration - 0.1));
+      const available = Math.max(0.1, duration - audioStart);
+      const fadeIn = Math.min(normalizeAudioSeconds(clip.audioFadeIn, 1, 10), available / 2);
+      const fadeOut = Math.min(normalizeAudioSeconds(clip.audioFadeOut, 1, 10), available / 2);
+      const musicSteps = [
+        "aformat=sample_rates=48000:channel_layouts=stereo",
+        `volume=${addedAudioVolume}`,
+        `atrim=0:${available}`,
+        "asetpts=PTS-STARTPTS",
+      ];
+      if (fadeIn > 0.01) musicSteps.push(`afade=t=in:st=0:d=${fadeIn}`);
+      if (fadeOut > 0.01) musicSteps.push(`afade=t=out:st=${Math.max(0, available - fadeOut)}:d=${fadeOut}`);
+      const delay = Math.round(audioStart * 1000);
+      if (delay > 0) musicSteps.push(`adelay=${delay}|${delay}`);
+      const mixedAudio = clip.autoDuck !== false
+        ? `[0:a]asplit=2[base][side];[1:a]${musicSteps.join(",")}[music];[music][side]sidechaincompress=threshold=0.025:ratio=8:attack=20:release=500[ducked];[base][ducked]amix=inputs=2:duration=first:normalize=0:dropout_transition=0[a]`
+        : `[1:a]${musicSteps.join(",")}[music];[0:a][music]amix=inputs=2:duration=first:normalize=0:dropout_transition=0[a]`;
+      const addedAudioInput = clip.audioLoop === false
+        ? ["-i", clip.audioPath]
+        : ["-stream_loop", "-1", "-i", clip.audioPath];
+      await run(ffmpegPath || "ffmpeg", [
+        "-y", "-i", basePath, ...addedAudioInput,
+        "-filter_complex", mixedAudio,
+        "-map", "0:v:0", "-map", "[a]", "-t", String(duration),
+        "-c:v", "copy", "-tag:v", "avc1", "-video_track_timescale", "30000",
+        ...quickTimeAudioArgs(audioBitrate),
+        "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", outputPath,
       ]);
     }
     clip.renderStatus = "ready";
@@ -2148,6 +2315,14 @@ function removeStoredMontageAudio(owner) {
   delete owner.montageAudioMime;
 }
 
+function removeStoredClipAudio(clip) {
+  const stored = clip?.audioPath ? path.resolve(clip.audioPath) : "";
+  if (stored && path.dirname(stored) === path.resolve(uploadDir) && fs.existsSync(stored)) fs.unlinkSync(stored);
+  delete clip.audioPath;
+  delete clip.audioName;
+  delete clip.audioMime;
+}
+
 function jobIsBusy(job) {
   return job.status === "queued"
     || job.status === "processing"
@@ -2167,6 +2342,7 @@ async function deleteJobPermanently(job) {
   for (const clip of job.clips || []) {
     removeLocalFile(path.join(exportDir, `${job.id}-${clip.id}.mp4`), exportDir);
     removeLocalFile(clip.memeImagePath, uploadDir);
+    removeLocalFile(clip.audioPath, uploadDir);
   }
   if (job.montage) removeBatchMontageFiles(job.batchId || job.id);
   removeLocalFile(path.join(projectsDir, `${job.id}.json`), projectsDir);

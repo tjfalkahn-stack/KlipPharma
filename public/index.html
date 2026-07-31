@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=0.28.0" />
+  <link rel="stylesheet" href="/styles.css?v=0.29.2" />
 </head>
 <body>
   <header class="topbar">
@@ -80,7 +80,7 @@
         <div class="source-methods">
           <div>
             <label class="dropzone" id="dropzone">
-              <input id="video" name="videos" type="file" accept="video/*,audio/*" multiple />
+              <input id="video" name="videos" type="file" accept="video/*,.mov,.mp4,.m4v,.webm,audio/*,.mp3,.m4a,.wav,.aac,.ogg,.flac" multiple aria-label="Choose videos or audio from your device" />
               <span class="upload-icon">↑</span>
               <strong id="fileLabel">Drop your long-form videos here</strong>
               <small>Choose up to 10 files · click or drop again to keep adding</small>
@@ -330,6 +330,35 @@
               <span>Upgrade to Pro to create memes, split-screen clips, image overlays, and custom headline graphics.</span>
             </div>
           </section>
+          <section class="clip-audio-mixer">
+            <div class="automix-audio-head">
+              <div><small>AUDIO &amp; TRANSLATION</small><strong>Mix the klip, add sounds, or change its voice</strong></div>
+              <span>APPLIES TO FINAL PREVIEW + EXPORT</span>
+            </div>
+            <div class="automix-audio-grid clip-audio-grid">
+              <label><span>ORIGINAL AUDIO <output class="clip-source-volume-value">100%</output></span><input class="clip-source-volume" type="range" min="0" max="150" step="1" value="100" /></label>
+              <label><span>ADDED SOUND <output class="clip-added-audio-volume-value">35%</output></span><input class="clip-added-audio-volume" type="range" min="0" max="150" step="1" value="35" /></label>
+              <label><span>SOUND STARTS AT</span><input class="clip-audio-start" type="number" min="0" max="90" step="0.1" value="0" /></label>
+              <label><span>FADE IN</span><input class="clip-audio-fade-in" type="number" min="0" max="10" step="0.1" value="1" /></label>
+              <label><span>FADE OUT</span><input class="clip-audio-fade-out" type="number" min="0" max="10" step="0.1" value="1" /></label>
+            </div>
+            <div class="automix-sound-track">
+              <div class="automix-sound-copy"><small>ADDED SOUND / MUSIC</small><strong class="clip-audio-name">No sound uploaded</strong><span>MP3, WAV, M4A, AAC, OGG, or FLAC</span></div>
+              <audio class="clip-audio-preview hidden" controls preload="metadata"></audio>
+              <label class="clip-audio-upload"><input type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac" /><span>Upload sound</span></label>
+              <button type="button" class="clip-audio-remove hidden">Remove</button>
+            </div>
+            <div class="automix-audio-options">
+              <label class="automix-check"><input class="clip-audio-loop" type="checkbox" /><span>Loop added sound to the end</span></label>
+              <label class="automix-check"><input class="clip-auto-duck" type="checkbox" checked /><span>Lower sound under speech</span></label>
+            </div>
+            <div class="clip-dub-grid">
+              <label><span>AUDIO LANGUAGE MODE</span><select class="clip-audio-translation"><option value="original">Keep original voice</option><option value="dubbed">Translated AI voice</option></select></label>
+              <label><span>TRANSLATE VOICE TO</span><select class="clip-translation-language"><option value="original">Original language</option><option value="en">English</option><option value="es">Spanish</option><option value="fr">French</option><option value="pt">Portuguese</option><option value="de">German</option><option value="it">Italian</option><option value="ja">Japanese</option><option value="ko">Korean</option><option value="zh">Chinese</option><option value="ar">Arabic</option><option value="hi">Hindi</option></select></label>
+              <label><span>VOICE</span><select class="clip-dub-voice"><option value="alloy">Alloy</option><option value="ash">Ash</option><option value="coral">Coral</option><option value="echo">Echo</option><option value="fable">Fable</option><option value="nova">Nova</option><option value="onyx">Onyx</option><option value="sage">Sage</option><option value="shimmer">Shimmer</option></select></label>
+              <div class="clip-dub-status"><small>EXPORT AUDIO</small><strong>ORIGINAL VOICE</strong><span>Build the exact final preview to hear this mix.</span></div>
+            </div>
+          </section>
           <div class="watermark-grid">
             <label><span>TEXT WATERMARK <small>OPTIONAL</small></span><input class="watermark-text" maxlength="80" placeholder="@yourhandle or Brand Name" /></label>
             <label><span>POSITION</span><select class="watermark-position"><option value="top-right">Top right</option><option value="top-left">Top left</option><option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option></select></label>
@@ -451,6 +480,6 @@
   </div>
 
   <div class="toast hidden" id="toast"></div>
-  <script src="/app.js?v=0.28.0" type="module"></script>
+  <script src="/app.js?v=0.29.2" type="module"></script>
 </body>
 </html>

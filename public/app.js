@@ -118,7 +118,12 @@ function paintLanguageControls() {
 }
 
 videoInput.addEventListener("change", () => {
-  const result = addSelectedFiles([...videoInput.files]);
+  const pickedFiles = [...videoInput.files];
+  const result = addSelectedFiles(pickedFiles);
+  // iOS Safari does not reliably allow scripts to rebuild FileList via DataTransfer.
+  // Keep our own File objects and clear the native control so the same item can be picked again.
+  videoInput.value = "";
+  if (!result.supported && pickedFiles.length) return toast("Choose a supported video or audio file.");
   if (result.limitReached) toast("KlipPharma holds up to 10 files in one batch.");
   else if (result.added) toast(`${result.added} ${result.added === 1 ? "video" : "videos"} added. ${selectedFiles.length} total.`);
 });
@@ -202,6 +207,10 @@ form.addEventListener("submit", async (event) => {
   setView("processing");
   try {
     const formData = new FormData(form);
+    // Append from app state instead of relying on input.files. This is required on
+    // iPhone/iPad Safari, where a programmatically assigned FileList can be ignored.
+    formData.delete("videos");
+    selectedFiles.forEach((file) => formData.append("videos", file, file.name));
     const fileOptions = selectedFiles.map((file) => ({ transcribe: fileModes.get(fileKey(file)) !== false }));
     formData.set("fileOptions", JSON.stringify(fileOptions));
     let data;
@@ -1051,9 +1060,9 @@ function addSelectedFiles(incoming) {
 }
 
 function syncSelectedFiles() {
-  const transfer = new DataTransfer();
-  selectedFiles.forEach((file) => transfer.items.add(file));
-  videoInput.files = transfer.files;
+  // selectedFiles is the source of truth. Do not construct DataTransfer here:
+  // its constructor/file assignment is unsupported on several iOS Safari releases.
+  videoInput.value = "";
 }
 
 function clearSelectedFiles() {
@@ -1352,6 +1361,24 @@ function installTrimmer(project, clip, card) {
   const focusLabel = card.querySelector(".focus-label");
   const focusPresets = [...card.querySelectorAll(".focus-presets button")];
   const overlaySaveState = card.querySelector(".overlay-save-state");
+  const sourceVolume = card.querySelector(".clip-source-volume");
+  const sourceVolumeValue = card.querySelector(".clip-source-volume-value");
+  const addedAudioVolume = card.querySelector(".clip-added-audio-volume");
+  const addedAudioVolumeValue = card.querySelector(".clip-added-audio-volume-value");
+  const audioStart = card.querySelector(".clip-audio-start");
+  const audioFadeIn = card.querySelector(".clip-audio-fade-in");
+  const audioFadeOut = card.querySelector(".clip-audio-fade-out");
+  const audioLoop = card.querySelector(".clip-audio-loop");
+  const autoDuck = card.querySelector(".clip-auto-duck");
+  const audioInput = card.querySelector(".clip-audio-upload input");
+  const audioUploadLabel = card.querySelector(".clip-audio-upload span");
+  const audioRemove = card.querySelector(".clip-audio-remove");
+  const audioName = card.querySelector(".clip-audio-name");
+  const audioPreview = card.querySelector(".clip-audio-preview");
+  const audioTranslation = card.querySelector(".clip-audio-translation");
+  const translationLanguage = card.querySelector(".clip-translation-language");
+  const dubVoice = card.querySelector(".clip-dub-voice");
+  const dubStatus = card.querySelector(".clip-dub-status strong");
   const original = { start: Number(clip.start), end: Number(clip.end) };
   const transcriptForSelection = (start, end) => (project.segments || [])
     .filter((segment) => Number(segment.end) > start && Number(segment.start) < end)
@@ -1380,6 +1407,18 @@ function installTrimmer(project, clip, card) {
     memeStart: Number.isFinite(Number(clip.memeStart)) ? Number(clip.memeStart) : 0,
     memeEnd: Number.isFinite(Number(clip.memeEnd)) ? Number(clip.memeEnd) : Math.max(1, original.end - original.start),
     memeImageUrl: clip.memeImageUrl || "",
+    sourceVolume: Number.isFinite(Number(clip.sourceVolume)) ? Number(clip.sourceVolume) : (project.audioTranslation === "dubbed" ? 16 : 100),
+    addedAudioVolume: Number.isFinite(Number(clip.addedAudioVolume)) ? Number(clip.addedAudioVolume) : 35,
+    audioStart: Number.isFinite(Number(clip.audioStart)) ? Number(clip.audioStart) : 0,
+    audioFadeIn: Number.isFinite(Number(clip.audioFadeIn)) ? Number(clip.audioFadeIn) : 1,
+    audioFadeOut: Number.isFinite(Number(clip.audioFadeOut)) ? Number(clip.audioFadeOut) : 1,
+    audioLoop: clip.audioLoop !== false,
+    autoDuck: clip.autoDuck !== false,
+    audioTranslation: clip.audioTranslation || project.audioTranslation || "original",
+    translationLanguage: clip.translationLanguage || project.translationLanguage || "original",
+    dubVoice: clip.dubVoice || project.dubVoice || "coral",
+    audioUrl: clip.audioUrl || "",
+    audioName: clip.audioName || "",
   };
   const initialSelectedDuration = Math.max(0.1, state.end - state.start);
   if (state.memeEnabled && state.memeEnd - state.memeStart <= 0.5) {
@@ -1420,6 +1459,38 @@ function installTrimmer(project, clip, card) {
   memeBackground.value = state.memeBackground;
   memeImageName.textContent = state.memeImageUrl ? "Overlay image added" : "No image added";
   memeImageRemove.classList.toggle("hidden", !state.memeImageUrl);
+  sourceVolume.value = String(state.sourceVolume);
+  addedAudioVolume.value = String(state.addedAudioVolume);
+  audioStart.value = String(state.audioStart);
+  audioFadeIn.value = String(state.audioFadeIn);
+  audioFadeOut.value = String(state.audioFadeOut);
+  audioLoop.checked = state.audioLoop;
+  autoDuck.checked = state.autoDuck;
+  audioTranslation.value = state.audioTranslation;
+  translationLanguage.value = state.translationLanguage;
+  dubVoice.value = state.dubVoice;
+
+  function paintAudioControls() {
+    sourceVolumeValue.textContent = `${Math.round(state.sourceVolume)}%`;
+    addedAudioVolumeValue.textContent = `${Math.round(state.addedAudioVolume)}%`;
+    audioName.textContent = state.audioName || "No sound uploaded";
+    audioRemove.classList.toggle("hidden", !state.audioUrl);
+    audioPreview.classList.toggle("hidden", !state.audioUrl);
+    if (state.audioUrl && audioPreview.src !== new URL(state.audioUrl, window.location.href).href) audioPreview.src = state.audioUrl;
+    if (!state.audioUrl) {
+      audioPreview.removeAttribute("src");
+      audioPreview.load();
+    }
+    const dubbed = state.audioTranslation === "dubbed" && state.translationLanguage !== "original";
+    translationLanguage.disabled = state.audioTranslation !== "dubbed";
+    dubVoice.disabled = !dubbed;
+    const languageLabel = translationLanguage.selectedOptions[0]?.textContent || state.translationLanguage;
+    dubStatus.textContent = dubbed
+      ? `${languageLabel.toUpperCase()} DUB • ${state.dubVoice.toUpperCase()}`
+      : "ORIGINAL VOICE";
+    video.volume = Math.min(1, Math.max(0, state.sourceVolume / 100));
+  }
+  paintAudioControls();
 
   function showPreviewMessage(message, detail, canRetry = true) {
     previewReady = false;
@@ -1618,6 +1689,18 @@ function installTrimmer(project, clip, card) {
       memeStart: state.memeStart,
       memeEnd: state.memeEnd,
       memeImageUrl: state.memeImageUrl,
+      sourceVolume: state.sourceVolume,
+      addedAudioVolume: state.addedAudioVolume,
+      audioStart: state.audioStart,
+      audioFadeIn: state.audioFadeIn,
+      audioFadeOut: state.audioFadeOut,
+      audioLoop: state.audioLoop,
+      autoDuck: state.autoDuck,
+      audioTranslation: state.audioTranslation,
+      translationLanguage: state.translationLanguage,
+      dubVoice: state.dubVoice,
+      audioUrl: state.audioUrl,
+      audioName: state.audioName,
     });
     lastSaved = signature();
     overlaySaveState.textContent = "Saved";
@@ -1689,6 +1772,83 @@ function installTrimmer(project, clip, card) {
     state.watermarkPosition = watermarkPosition.value;
     markCutChanged();
     queueSave();
+  });
+  [
+    [sourceVolume, "input", () => { state.sourceVolume = Number(sourceVolume.value); }],
+    [addedAudioVolume, "input", () => { state.addedAudioVolume = Number(addedAudioVolume.value); }],
+    [audioStart, "input", () => { state.audioStart = Number(audioStart.value); }],
+    [audioFadeIn, "input", () => { state.audioFadeIn = Number(audioFadeIn.value); }],
+    [audioFadeOut, "input", () => { state.audioFadeOut = Number(audioFadeOut.value); }],
+    [audioLoop, "change", () => { state.audioLoop = audioLoop.checked; }],
+    [autoDuck, "change", () => { state.autoDuck = autoDuck.checked; }],
+    [audioTranslation, "change", () => {
+      state.audioTranslation = audioTranslation.value;
+      if (state.audioTranslation === "dubbed" && state.translationLanguage === "original") {
+        state.translationLanguage = project.translationLanguage && project.translationLanguage !== "original"
+          ? project.translationLanguage
+          : "es";
+        translationLanguage.value = state.translationLanguage;
+      }
+    }],
+    [translationLanguage, "change", () => {
+      state.translationLanguage = translationLanguage.value;
+      if (state.translationLanguage === "original") {
+        state.audioTranslation = "original";
+        audioTranslation.value = "original";
+      }
+    }],
+    [dubVoice, "change", () => { state.dubVoice = dubVoice.value; }],
+  ].forEach(([control, eventName, update]) => control.addEventListener(eventName, () => {
+    update();
+    paintAudioControls();
+    markCutChanged();
+    queueSave();
+  }));
+
+  audioInput.addEventListener("change", async () => {
+    const sound = audioInput.files?.[0];
+    if (!sound) return;
+    audioInput.disabled = true;
+    audioUploadLabel.textContent = "Uploading…";
+    try {
+      await save();
+      const formData = new FormData();
+      formData.append("audio", sound);
+      const response = await fetch(`/api/projects/${project.id}/clips/${clip.id}/audio`, { method: "POST", body: formData });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not upload that sound.");
+      state.audioUrl = `${data.audioUrl}?v=${Date.now()}`;
+      state.audioName = data.audioName || sound.name;
+      clip.audioUrl = state.audioUrl;
+      clip.audioName = state.audioName;
+      lastSaved = signature();
+      paintAudioControls();
+      markCutChanged();
+      toast("Sound added to this klip.");
+    } catch (error) {
+      toast(error.message || "Could not upload that sound.");
+    } finally {
+      audioInput.disabled = false;
+      audioUploadLabel.textContent = "Upload sound";
+      audioInput.value = "";
+    }
+  });
+
+  audioRemove.addEventListener("click", async () => {
+    if (!state.audioUrl) return;
+    audioRemove.disabled = true;
+    const response = await fetch(`/api/projects/${project.id}/clips/${clip.id}/audio`, { method: "DELETE" });
+    const data = await response.json();
+    audioRemove.disabled = false;
+    if (!response.ok) return toast(data.error || "Could not remove that sound.");
+    state.audioUrl = "";
+    state.audioName = "";
+    clip.audioUrl = "";
+    clip.audioName = "";
+    lastSaved = signature();
+    paintAudioControls();
+    markCutChanged();
+    toast("Added sound removed.");
   });
   [
     [memeEnabled, "change", () => {

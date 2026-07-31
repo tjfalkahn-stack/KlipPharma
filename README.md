@@ -4,6 +4,25 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
+## Version 0.29.2 — Silent camera-roll video handling
+
+- Video-only MP4/MOV files no longer fail during audio extraction.
+- KlipPharma detects when a source has no audio stream and opens it in the visual/manual editor automatically.
+- Silent sources remain editable and can receive uploaded music or sounds through the klip audio mixer.
+
+## Version 0.29.1 — Mobile camera-roll upload fix
+
+- The upload surface now uses the real full-size file control instead of a `display:none` input, so tapping it opens Photos/Files reliably on iPhone and iPad.
+- Selected files are kept in application state and appended directly to the upload request, avoiding iOS Safari's unsupported `DataTransfer` file-list behavior.
+- Mobile users can select additional footage repeatedly, remove files, and upload MOV, M4V, MP4, WebM, and common audio formats.
+
+## Version 0.29.0 — Individual-klip audio mixer and reliable translated voices
+
+- Restores the audio mixer inside every individual klip editor, including source volume, added-sound volume, start time, looping, fades, and automatic ducking.
+- Adds per-klip MP3, WAV, M4A, AAC, OGG, and FLAC upload, playback, replacement, and removal.
+- Moves translated-audio language and AI-voice selection into each klip so the chosen Spanish or other-language voice is saved and used by the final renderer.
+- Changing the voice, language, or mix invalidates the old render and requires an exact final-preview rebuild before download.
+
 ## Version 0.28.0 — Production YouTube importer
 
 - Railway is explicitly configured to build the Dockerfile that installs FFmpeg and the pinned `yt-dlp` runtime.

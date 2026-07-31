@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=0.24.4" />
+  <link rel="stylesheet" href="/styles.css?v=0.25.0" />
 </head>
 <body>
   <header class="topbar">
@@ -132,6 +132,23 @@
             <label class="length-option"><input type="radio" name="clipLength" value="60" /><span><strong>1:00</strong><small>Deep cut</small></span></label>
             <label class="length-option"><input type="radio" name="clipLength" value="90" /><span><strong>1:30</strong><small>Full moment</small></span></label>
           </div>
+          <section class="pro-output-count" id="proOutputCount">
+            <div class="pro-output-copy">
+              <span>PRO · BATCH OUTPUT</span>
+              <strong>How many finished klips should AI create?</strong>
+              <small id="outputCountHelp">Pro members can request 1–10 top-ranked klips across the entire batch.</small>
+            </div>
+            <label class="output-count-field">
+              <span>FINISHED KLIPS</span>
+              <select name="outputCount" id="outputCount" aria-describedby="outputCountHelp">
+                <option value="1">1 video</option><option value="2">2 videos</option><option value="3">3 videos</option>
+                <option value="4">4 videos</option><option value="5" selected>5 videos</option><option value="6">6 videos</option>
+                <option value="7">7 videos</option><option value="8">8 videos</option><option value="9">9 videos</option>
+                <option value="10">10 videos</option>
+              </select>
+            </label>
+            <b class="pro-output-badge" id="outputCountBadge">PRO</b>
+          </section>
           <div class="batch-brand-grid">
             <label><span>DEFAULT TEXT WATERMARK <small>OPTIONAL</small></span><input name="watermarkText" maxlength="80" placeholder="e.g. @yourhandle or Brand Name" /></label>
             <label><span>WATERMARK POSITION</span><select name="watermarkPosition"><option value="top-right">Top right</option><option value="top-left">Top left</option><option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option></select></label>
@@ -171,13 +188,15 @@
       </section>
     </section>
 
-    <section class="processing hidden" id="processingView">
+    <section class="processing hidden" id="processingView" aria-live="polite" aria-busy="true">
       <div class="spinner"><span></span></div>
       <p class="kicker">KLIPPHARMA IS WORKING</p>
       <h2 id="stage">Preparing your clips</h2>
       <div class="progress"><i id="progressBar"></i></div>
       <p id="progressText">0%</p>
+      <p class="processing-summary" id="processingSummary">We’ll show every upload and processing step here.</p>
       <div class="batch-status" id="batchStatus"></div>
+      <button class="secondary processing-back hidden" id="processingBack" type="button">Back to sources</button>
     </section>
 
     <section class="results hidden" id="resultsView">
@@ -417,6 +436,6 @@
   </div>
 
   <div class="toast hidden" id="toast"></div>
-  <script src="/app.js?v=0.24.4" type="module"></script>
+  <script src="/app.js?v=0.25.0" type="module"></script>
 </body>
 </html>

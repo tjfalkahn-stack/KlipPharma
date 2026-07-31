@@ -19,6 +19,7 @@ const youtubeImportButton = $("#youtubeImportButton");
 const youtubeImportStatus = $("#youtubeImportStatus");
 const uploadView = $("#uploadView");
 const processingView = $("#processingView");
+const processingBack = $("#processingBack");
 const resultsView = $("#resultsView");
 const autoMixBuilder = $("#autoMixBuilder");
 const autoMixToggle = $("#createMontage");
@@ -27,6 +28,10 @@ const translationLanguage = $("#translationLanguage");
 const audioTranslation = $("#audioTranslation");
 const dubVoice = $("#dubVoice");
 const audioTranslationHelp = $("#audioTranslationHelp");
+const outputCount = $("#outputCount");
+const proOutputCount = $("#proOutputCount");
+const outputCountBadge = $("#outputCountBadge");
+const outputCountHelp = $("#outputCountHelp");
 let selectedFiles = [];
 const fileModes = new Map();
 let currentProjects = [];
@@ -45,6 +50,12 @@ const creatorModeCopy = {
   podcast: ["Podcast / Interview", "Keeps essential questions and answers together while finding insights, debates, stories, humor, and reactions."],
   monologue: ["Monologue / Talking Head", "Cuts slow introductions and prioritizes cold opens, lessons, hot takes, personal stories, and direct calls to action."],
 };
+
+processingBack.addEventListener("click", () => {
+  processingBack.classList.add("hidden");
+  processingView.setAttribute("aria-busy", "false");
+  setView("upload");
+});
 const languageNames = {
   en: "English", es: "Spanish", fr: "French", pt: "Portuguese", de: "German", it: "Italian",
   ja: "Japanese", ko: "Korean", zh: "Chinese", ar: "Arabic", hi: "Hindi",
@@ -57,6 +68,20 @@ function isPaidPlan(user = currentUser) {
 function hasCreativeAccess(user = currentUser) {
   return new Set(["pro", "studio", "business"]).has(String(user?.planTier || "").toLowerCase())
     || user?.creativeFeaturesOpen === true;
+}
+
+function hasProBatchOutput(user = currentUser) {
+  return new Set(["pro", "studio", "business"]).has(String(user?.planTier || "").trim().toLowerCase());
+}
+
+function paintOutputCountPolicy() {
+  const enabled = hasProBatchOutput();
+  outputCount.disabled = !enabled;
+  proOutputCount.classList.toggle("locked", !enabled);
+  outputCountBadge.textContent = enabled ? "PRO ACTIVE" : "PRO";
+  outputCountHelp.textContent = enabled
+    ? "Choose exactly 1–10 top-ranked klips across the entire batch."
+    : "Upgrade to Pro to choose 1–10 finished klips. Your current plan uses Smart selection.";
 }
 
 function paintBrandPolicy(root = document) {
@@ -151,6 +176,7 @@ youtubeImportButton.addEventListener("click", async () => {
         dubVoice: settings.get("dubVoice"),
         watermarkText: settings.get("watermarkText"),
         watermarkPosition: settings.get("watermarkPosition"),
+        outputCount: settings.get("outputCount"),
       }),
     });
     const data = await response.json();
@@ -177,11 +203,14 @@ form.addEventListener("submit", async (event) => {
     const formData = new FormData(form);
     const fileOptions = selectedFiles.map((file) => ({ transcribe: fileModes.get(fileKey(file)) !== false }));
     formData.set("fileOptions", JSON.stringify(fileOptions));
-    const response = uploadMode === "direct"
-      ? await uploadBatchDirectly(formData, fileOptions)
-      : await fetch("/api/projects", { method: "POST", body: formData });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error);
+    let data;
+    if (uploadMode === "direct") {
+      const response = await uploadBatchDirectly(formData, fileOptions);
+      data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The cloud upload could not start.");
+    } else {
+      data = await uploadBatchLocally(formData);
+    }
     currentProjects = data.ids || [data.id];
     await pollProjects();
   } catch (error) {
@@ -189,6 +218,39 @@ form.addEventListener("submit", async (event) => {
     setView("upload");
   }
 });
+
+function uploadBatchLocally(formData) {
+  const totalBytes = selectedFiles.reduce((sum, file) => sum + file.size, 0);
+  renderUploadTransfer(selectedFiles.map(() => 0), selectedFiles.map((file) => file.size), "Starting upload");
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/projects");
+    xhr.responseType = "json";
+    xhr.upload.addEventListener("progress", (event) => {
+      if (!event.lengthComputable) return;
+      const sourceBytesUploaded = totalBytes * Math.min(1, event.loaded / Math.max(1, event.total));
+      let remaining = sourceBytesUploaded;
+      const loaded = selectedFiles.map((file) => {
+        const value = Math.max(0, Math.min(file.size, remaining));
+        remaining -= file.size;
+        return value;
+      });
+      renderUploadTransfer(loaded, selectedFiles.map((file) => file.size), "Uploading to KlipPharma");
+    });
+    xhr.addEventListener("load", () => {
+      const data = xhr.response || safeJson(xhr.responseText);
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(data?.error || `Upload failed with status ${xhr.status}.`));
+        return;
+      }
+      renderUploadTransfer(selectedFiles.map((file) => file.size), selectedFiles.map((file) => file.size), "Upload complete · starting processors");
+      resolve(data);
+    });
+    xhr.addEventListener("error", () => reject(new Error("The upload connection was interrupted. Check your connection and try again.")));
+    xhr.addEventListener("abort", () => reject(new Error("The upload was canceled.")));
+    xhr.send(formData);
+  });
+}
 
 async function uploadBatchDirectly(formData, fileOptions) {
   $("#stage").textContent = `Preparing ${selectedFiles.length} private cloud ${selectedFiles.length === 1 ? "upload" : "uploads"}`;
@@ -202,19 +264,13 @@ async function uploadBatchDirectly(formData, fileOptions) {
   const prepared = await prepare.json();
   if (!prepare.ok) throw new Error(prepared.error || "Could not prepare the cloud upload.");
 
-  let completed = 0;
+  const loadedByFile = selectedFiles.map(() => 0);
+  const totalByFile = selectedFiles.map((file) => file.size);
   await Promise.all(prepared.uploads.map(async (upload, index) => {
-    const response = await fetch(upload.uploadUrl, {
-      method: "PUT",
-      headers: { "Content-Type": upload.type || selectedFiles[index].type || "application/octet-stream" },
-      body: selectedFiles[index],
+    await uploadFileDirectly(upload.uploadUrl, selectedFiles[index], upload.type, (loaded) => {
+      loadedByFile[index] = loaded;
+      renderUploadTransfer(loadedByFile, totalByFile, "Uploading privately to cloud storage");
     });
-    if (!response.ok) throw new Error(`Cloud upload failed for ${selectedFiles[index].name}. Check the R2 CORS policy.`);
-    completed += 1;
-    const progress = 8 + Math.round((completed / selectedFiles.length) * 72);
-    $("#stage").textContent = `Uploaded ${completed} of ${selectedFiles.length} sources`;
-    $("#progressBar").style.width = `${progress}%`;
-    $("#progressText").textContent = `${progress}% · private R2 transfer`;
   }));
 
   $("#stage").textContent = "Verifying uploads and starting the processors";
@@ -236,12 +292,67 @@ async function uploadBatchDirectly(formData, fileOptions) {
     translationLanguage: formData.get("translationLanguage"),
     audioTranslation: formData.get("audioTranslation"),
     dubVoice: formData.get("dubVoice"),
+    outputCount: formData.get("outputCount"),
   };
   return fetch("/api/projects/cloud", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(settings),
   });
+}
+
+function uploadFileDirectly(url, file, type, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.setRequestHeader("Content-Type", type || file.type || "application/octet-stream");
+    xhr.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) onProgress(event.loaded);
+    });
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress(file.size);
+        resolve();
+      } else {
+        reject(new Error(`Cloud upload failed for ${file.name}. Check the R2 CORS policy.`));
+      }
+    });
+    xhr.addEventListener("error", () => reject(new Error(`The cloud upload connection failed for ${file.name}.`)));
+    xhr.send(file);
+  });
+}
+
+function renderUploadTransfer(loadedByFile, totalByFile, label) {
+  const loaded = loadedByFile.reduce((sum, value) => sum + Number(value || 0), 0);
+  const total = totalByFile.reduce((sum, value) => sum + Number(value || 0), 0);
+  const percent = total ? (loaded >= total ? 100 : Math.min(99, Math.round((loaded / total) * 100))) : 0;
+  $("#stage").textContent = `${label} · ${loadedByFile.filter((value, index) => value >= totalByFile[index]).length} of ${loadedByFile.length} transferred`;
+  $("#progressBar").style.width = `${percent}%`;
+  $("#progressText").textContent = `${percent}% uploaded · ${formatBytes(loaded)} of ${formatBytes(total)}`;
+  $("#processingSummary").textContent = "Keep this page open while your source files transfer. Processing starts automatically.";
+  const statusBox = $("#batchStatus");
+  statusBox.innerHTML = "";
+  selectedFiles.forEach((file, index) => {
+    const filePercent = totalByFile[index] ? Math.min(100, Math.round((loadedByFile[index] / totalByFile[index]) * 100)) : 0;
+    const row = document.createElement("div");
+    row.className = "batch-row uploading";
+    row.innerHTML = `<span class="batch-row-main"><b class="batch-row-name"></b><small class="batch-row-stage"></small></span><strong class="batch-row-status">${filePercent}%</strong><span class="batch-row-progress"><i style="width:${filePercent}%"></i></span>`;
+    row.querySelector(".batch-row-name").textContent = file.name;
+    row.querySelector(".batch-row-stage").textContent = `${formatBytes(loadedByFile[index])} of ${formatBytes(totalByFile[index])}`;
+    statusBox.append(row);
+  });
+}
+
+function safeJson(value) {
+  try { return JSON.parse(value || "{}"); } catch { return {}; }
+}
+
+function formatBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 async function pollProjects() {
@@ -261,9 +372,12 @@ async function pollProjects() {
       const successful = projects.filter((project) => project.status === "ready");
       if (!successful.length) {
         toast(projects[0]?.error || "The batch could not be processed.");
-        setView("upload");
+        processingView.setAttribute("aria-busy", "false");
+        processingBack.classList.remove("hidden");
         return;
       }
+      processingView.setAttribute("aria-busy", "false");
+      processingBack.classList.add("hidden");
       renderResults(successful);
       setView("results");
       loadRecentProjects();
@@ -279,36 +393,73 @@ async function pollProjects() {
 }
 
 function renderBatchStatus(projects) {
-  const average = Math.round(projects.reduce((sum, project) => sum + Number(project.progress || 0), 0) / projects.length);
+  const failed = projects.filter((project) => project.status === "failed").length;
+  const progressValues = projects.map((project) => (
+    project.status === "failed" ? Math.min(95, Number(project.progress || 0)) : Number(project.progress || 0)
+  ));
+  const average = Math.round(progressValues.reduce((sum, progress) => sum + progress, 0) / projects.length);
   const ready = projects.filter((project) => project.status === "ready").length;
   const active = projects.filter((project) => project.status === "processing").length;
+  const queued = projects.filter((project) => project.status === "queued").length;
   const montage = projects.find((project) => project.montage)?.montage;
   const buildingMontage = montage && (montage.status === "waiting" || montage.status === "rendering");
   $("#stage").textContent = buildingMontage
     ? montage.status === "rendering" ? "Building one Auto-Mix from your batch" : "Auto-Mix is waiting for every source"
+    : failed && ready + failed === projects.length
+      ? `${failed} ${failed === 1 ? "video needs" : "videos need"} attention`
     : ready
     ? `${ready} of ${projects.length} videos ready`
     : active
       ? `Processing ${projects.length} ${projects.length === 1 ? "video" : "videos"}`
       : "Your batch is queued";
   $("#progressBar").style.width = `${average}%`;
-  $("#progressText").textContent = buildingMontage ? "Individual klips ready · assembling Auto-Mix" : `${average}% total`;
+  $("#progressText").textContent = buildingMontage
+    ? "Individual klips ready · assembling Auto-Mix"
+    : `${average}% processing · ${ready} ready · ${failed} need attention`;
+  $("#processingSummary").textContent = failed
+    ? "Open the item below to see what failed. Successful videos will still finish."
+    : queued
+      ? `${queued} ${queued === 1 ? "video is" : "videos are"} waiting for a processor. This page updates automatically.`
+      : "Upload complete. KlipPharma is analyzing each source and will show every phase below.";
   const statusBox = $("#batchStatus");
   statusBox.innerHTML = "";
   projects.forEach((project) => {
     const row = document.createElement("div");
     row.className = `batch-row ${project.status}`;
-    const name = document.createElement("span");
+    const main = document.createElement("span");
+    main.className = "batch-row-main";
+    const name = document.createElement("b");
+    name.className = "batch-row-name";
     name.textContent = project.originalName;
+    const stage = document.createElement("small");
+    stage.className = "batch-row-stage";
+    stage.textContent = project.status === "failed"
+      ? project.stage || "Processing stopped"
+      : project.status === "queued" && project.queuePosition
+        ? `${project.stage || "Queued"} · position ${project.queuePosition}`
+        : project.stage || "Preparing";
+    main.append(name, stage);
     const detail = document.createElement("strong");
+    detail.className = "batch-row-status";
     detail.textContent = project.status === "ready"
       ? `${project.clips?.length || 0} klips ready`
       : project.status === "failed"
-        ? "Needs attention"
+        ? `Stopped at ${Math.min(95, Number(project.progress || 0))}%`
         : project.status === "queued"
           ? "Queued"
-          : `${project.progress || 0}% · ${project.stage}`;
-    row.append(name, detail);
+          : `${project.progress || 0}%`;
+    const progress = document.createElement("span");
+    progress.className = "batch-row-progress";
+    const progressFill = document.createElement("i");
+    progressFill.style.width = `${project.status === "failed" ? Math.min(95, Number(project.progress || 0)) : Number(project.progress || 0)}%`;
+    progress.append(progressFill);
+    row.append(main, detail, progress);
+    if (project.status === "failed" && project.error) {
+      const error = document.createElement("p");
+      error.className = "batch-row-error";
+      error.textContent = project.error;
+      row.append(error);
+    }
     if (project.sourceReady && project.sourceUrl) {
       const download = document.createElement("a");
       download.className = "batch-source-download";
@@ -1656,7 +1807,15 @@ deleteBatchButton.addEventListener("click", async () => {
   loadRecentProjects();
   toast("Batch and every stored video deleted.");
 });
-function setView(view) { uploadView.classList.toggle("hidden", view !== "upload"); processingView.classList.toggle("hidden", view !== "processing"); resultsView.classList.toggle("hidden", view !== "results"); }
+function setView(view) {
+  uploadView.classList.toggle("hidden", view !== "upload");
+  processingView.classList.toggle("hidden", view !== "processing");
+  resultsView.classList.toggle("hidden", view !== "results");
+  if (view === "processing") {
+    processingView.setAttribute("aria-busy", "true");
+    processingBack.classList.add("hidden");
+  }
+}
 function clock(seconds) { const m=Math.floor(seconds/60); return `${m}:${String(Math.floor(seconds%60)).padStart(2,"0")}`; }
 function preciseClock(seconds) { const m=Math.floor(seconds/60); return `${m}:${String((seconds%60).toFixed(1)).padStart(4,"0")}`; }
 function normalizeClientColor(value) {
@@ -2148,6 +2307,7 @@ function showApplication(user) {
   authView.classList.add("hidden");
   appShell.classList.remove("hidden");
   paintBrandPolicy(document);
+  paintOutputCountPolicy();
   $("#accountEmail").textContent = user?.local ? "Local owner" : (user?.email || "Creator");
   $("#accountPlan").textContent = user?.local
     ? "PREVIEW"

@@ -4,6 +4,14 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
+## Version 0.25.0 — Transparent progress + Pro batch output
+
+- Shows byte-level upload progress for every local or direct-cloud source.
+- Shows each video’s queue position, processing phase, progress bar, and full failure reason.
+- Failed processing no longer appears as a misleading 100% completed batch.
+- Pro, Studio, and Business users can request 1–10 finished AI klips across the entire batch.
+- KlipPharma ranks candidates from all uploaded sources and keeps the requested top total.
+
 ## Version 0.24.0 — Business workspaces
 
 The $199/month Business plan is now a real five-account workspace rather than a display-only price. Business owners can invite teammates with secure seven-day links, assign owner/admin/editor/viewer permissions, share project history and exports, revoke pending invitations, and remove members. Owners control centralized Stripe billing; admins manage people; editors create and edit; viewers review without changing shared work. Business Annual is $1,990/year, giving the same two-month annual discount as the individual tiers.

@@ -605,6 +605,7 @@ app.post("/api/youtube/import", (req, res) => {
     batchSize: 1,
     status: "processing",
     progress: 3,
+    phase: "import",
     stage: "Connecting to your YouTube source",
     originalName: "YouTube video · preparing",
     filePath: null,
@@ -625,6 +626,8 @@ app.post("/api/youtube/import", (req, res) => {
     watermarkText: normalizeWatermarkText(req.body.watermarkText),
     watermarkPosition: normalizeOverlayPosition(req.body.watermarkPosition),
     planTier: normalizePlanTier(req.user.planTier),
+    requestedOutputCount: normalizeRequestedOutputCount(req.body.outputCount, req.user.planTier),
+    customOutputCountEnabled: hasProBatchOutput(req.user.planTier),
     klipPharmaWatermarkRequired: !hasPaidPlan(req.user.planTier),
     audience: req.body.audience || "General audience",
     goal: req.body.goal || "High-retention social clips",
@@ -640,9 +643,11 @@ app.post("/api/youtube/import", (req, res) => {
       removeYouTubeWorkingFiles(job.id);
       Object.assign(job, {
         status: "failed",
-        progress: 100,
+        progress: Math.min(95, Math.max(3, Number(job.progress || 3))),
+        phase: "failed",
         stage: "YouTube import failed",
         error: friendlyYouTubeError(error),
+        failedAt: new Date().toISOString(),
       });
       persistJob(job);
     });
@@ -687,6 +692,7 @@ function createProjectBatch(req, files, fileOptions = []) {
       batchSize: files.length,
       status: "queued",
       progress: 2,
+      phase: "queued",
       stage: "Waiting for the processor",
       originalName: file.originalname,
       filePath: file.path,
@@ -705,6 +711,8 @@ function createProjectBatch(req, files, fileOptions = []) {
       watermarkText: normalizeWatermarkText(req.body.watermarkText),
       watermarkPosition: normalizeOverlayPosition(req.body.watermarkPosition),
       planTier: normalizePlanTier(req.user.planTier),
+      requestedOutputCount: normalizeRequestedOutputCount(req.body.outputCount, req.user.planTier),
+      customOutputCountEnabled: hasProBatchOutput(req.user.planTier),
       klipPharmaWatermarkRequired: !hasPaidPlan(req.user.planTier),
       audience: req.body.audience || "General audience",
       goal: req.body.goal || "High-retention social clips",
@@ -757,11 +765,19 @@ function runNextProjects() {
     processProject(job)
       .catch((error) => {
         console.error(error);
-        Object.assign(job, { status: "failed", progress: 100, stage: "Processing failed", error: friendlyError(error) });
+        Object.assign(job, {
+          status: "failed",
+          progress: Math.min(95, Math.max(2, Number(job.progress || 2))),
+          phase: "failed",
+          stage: "Processing failed",
+          error: friendlyError(error),
+          failedAt: new Date().toISOString(),
+        });
         persistJob(job);
       })
       .finally(() => {
         activeProjects -= 1;
+        finalizeBatchOutputCount(job.batchId);
         maybeStartBatchMontage(job.batchId);
         runNextProjects();
       });
@@ -785,6 +801,9 @@ app.get("/api/projects/:id", (req, res) => {
       return safeClip;
     }),
   };
+  safe.queuePosition = job.status === "queued"
+    ? Math.max(0, processingQueue.findIndex((item) => item.id === job.id) + 1)
+    : 0;
   safe.planTier = normalizePlanTier(req.user.planTier);
   safe.klipPharmaWatermarkRequired = !hasPaidPlan(req.user.planTier);
   if (job.filePath && !isAudioOnly(job.filePath)) safe.sourceUrl = `/api/projects/${job.id}/source`;
@@ -1107,7 +1126,7 @@ async function importYouTubeSource(job, canonicalUrl) {
   job.mimeType = mimeTypeFor(downloaded);
   job.originalName = `${title}${path.extname(downloaded).toLowerCase() || ".mp4"}`;
   job.sourceReady = true;
-  Object.assign(job, { status: "queued", progress: 48, stage: "Source MP4 ready · waiting for the klip processor" });
+  Object.assign(job, { status: "queued", progress: 48, phase: "queued", stage: "Source MP4 ready · waiting for the klip processor" });
   persistJob(job);
   enqueueProject(job);
 }
@@ -1129,6 +1148,7 @@ function runYouTubeDownload(command, args, job) {
       if (progress < lastSavedProgress + 3) return;
       lastSavedProgress = progress;
       job.progress = progress;
+      job.phase = "import";
       job.stage = `Downloading your source MP4 · ${Math.round(percent)}%`;
       persistJob(job);
     });
@@ -1169,7 +1189,12 @@ async function ensureLocalSource(job) {
 async function processProject(job) {
   await ensureLocalSource(job);
   const manualMode = job.processingMode === "manual";
-  Object.assign(job, { status: "processing", progress: 10, stage: manualMode ? "Preparing your manual editor" : "Extracting clear audio from your video" });
+  Object.assign(job, {
+    status: "processing",
+    progress: 10,
+    phase: manualMode ? "prepare" : "audio",
+    stage: manualMode ? "Preparing your manual editor" : "Extracting clear audio from your video",
+  });
   persistJob(job);
   const audioPath = path.join(uploadDir, `${job.id}-audio.mp3`);
   const command = ffmpegPath || "ffmpeg";
@@ -1184,6 +1209,10 @@ async function processProject(job) {
     ]);
   const [, , mediaDuration] = await Promise.all([audioTask, previewTask, durationTask]);
   job.duration = Math.max(1, Number(mediaDuration) || 1);
+  job.progress = 24;
+  job.phase = "prepare";
+  job.stage = manualMode ? "Source preview ready" : "Audio and preview prepared";
+  persistJob(job);
 
   if (manualMode) {
     job.transcript = "";
@@ -1210,13 +1239,14 @@ async function processProject(job) {
       renderStatus: "idle",
       feedback: null,
     }];
-    Object.assign(job, { status: "ready", progress: 100, stage: "Manual editor ready" });
+    Object.assign(job, { status: "ready", progress: 100, phase: "ready", stage: "Manual editor ready" });
     persistJob(job);
     return;
   }
 
   job.audioPath = audioPath;
   job.progress = 28;
+  job.phase = "transcribe";
   job.stage = "Transcribing every word and timestamp";
   persistJob(job);
   const transcription = await transcribeAudio(job, audioPath);
@@ -1227,12 +1257,16 @@ async function processProject(job) {
   job.transcript = job.originalTranscript;
   job.segments = job.originalSegments;
   if (job.translationLanguage !== "original") {
+    job.progress = 64;
+    job.phase = "translate";
     job.stage = `Translating captions into ${languageLabel(job.translationLanguage)}`;
     persistJob(job);
-    job.segments = await translateSegments(job.originalSegments, job.translationLanguage);
+    job.segments = await translateSegments(job.originalSegments, job.translationLanguage, job);
     job.transcript = job.segments.map((segment) => segment.text).join(" ").trim();
   }
-  job.stage = "Ranking hooks, context, and payoff";
+  job.progress = 82;
+  job.phase = "select";
+  job.stage = `Selecting the strongest ${job.requestedOutputCount || 8} klips`;
   persistJob(job);
   job.duration = Math.max(job.duration, Math.ceil(job.segments.at(-1)?.end || 0));
   const clips = await chooseClips(job);
@@ -1249,7 +1283,7 @@ async function processProject(job) {
     renderStatus: "idle",
     feedback: null,
   }));
-  Object.assign(job, { status: "ready", progress: 100, stage: `${job.clips.length} dope clips found` });
+  Object.assign(job, { status: "ready", progress: 100, phase: "ready", stage: `${job.clips.length} dope clips found` });
   persistJob(job);
 }
 
@@ -1276,6 +1310,7 @@ async function transcribeAudio(job, audioPath) {
       ? `Transcribing section ${index + 1} of ${files.length}`
       : "Transcribing every word and timestamp";
     job.progress = 28 + Math.round(((index + 1) / files.length) * 24);
+    job.phase = "transcribe";
     persistJob(job);
     const request = {
       file: fs.createReadStream(files[index].path),
@@ -1298,11 +1333,19 @@ async function transcribeAudio(job, audioPath) {
   return combined;
 }
 
-async function translateSegments(segments, targetLanguage) {
+async function translateSegments(segments, targetLanguage, job = null) {
   const translated = [];
   const targetLabel = languageLabel(targetLanguage);
   for (let offset = 0; offset < segments.length; offset += 60) {
     const chunk = segments.slice(offset, offset + 60);
+    if (job) {
+      const completed = Math.ceil(offset / 60);
+      const total = Math.max(1, Math.ceil(segments.length / 60));
+      job.progress = 64 + Math.round((completed / total) * 14);
+      job.phase = "translate";
+      job.stage = `Translating caption group ${completed + 1} of ${total} into ${targetLabel}`;
+      persistJob(job);
+    }
     const response = await openai.chat.completions.create({
       model: process.env.AI_TEXT_MODEL || "gpt-4o-mini",
       temperature: 0.1,
@@ -1344,6 +1387,7 @@ async function chooseClips(job) {
   const creatorMode = creatorModes[job.contentType] || creatorModes.auto;
   const requestedLength = Number(job.clipLength);
   const generationMaximum = Number.isFinite(requestedLength) ? requestedLength : 90;
+  const requestedOutputCount = Math.min(10, Math.max(1, Number(job.requestedOutputCount) || 8));
   const lengthRule = Number.isFinite(requestedLength)
     ? `The batch recipe requires every initial AI cut to be no longer than ${requestedLength} seconds. Aim for a complete moment between ${Math.max(8, requestedLength - Math.min(8, Math.round(requestedLength * 0.2)))} and ${requestedLength} seconds. This batch rule overrides any preferred range in the creator-mode guidance.`
     : "Use Smart length: choose the shortest duration that preserves the complete hook, context, and payoff, from 15 to 90 seconds.";
@@ -1358,7 +1402,7 @@ async function chooseClips(job) {
       },
       {
         role: "user",
-        content: `Audience: ${job.audience}\nGoal: ${job.goal}\nPlatform: ${job.platform}\nCreator mode: ${creatorMode.label}\n\nBATCH AUTO-KLIP LENGTH\n${lengthRule}\n\nMODE-SPECIFIC EDITORIAL RULES\n${creatorMode.prompt}\n\nSelect up to 8 non-overlapping clips and never exceed the batch maximum or 90 seconds. Every selection must begin and end on a complete thought. Each clip needs: start (number), end (number), title, hook, whyChosen, caption, strategy (a short 1-3 word editorial lane), scores object with hook, context, payoff, retention, audienceFit, platformFit (integers 0-100), and overallScore (integer 0-100). Prefer exact transcript boundaries.\n\nTRANSCRIPT\n${transcript.slice(0, 110000)}`,
+        content: `Audience: ${job.audience}\nGoal: ${job.goal}\nPlatform: ${job.platform}\nCreator mode: ${creatorMode.label}\n\nBATCH AUTO-KLIP LENGTH\n${lengthRule}\n\nMODE-SPECIFIC EDITORIAL RULES\n${creatorMode.prompt}\n\nReturn the strongest ${requestedOutputCount} non-overlapping clips when the source contains enough qualifying moments, and never return more than ${requestedOutputCount}. Never exceed the batch maximum or 90 seconds. Every selection must begin and end on a complete thought. Each clip needs: start (number), end (number), title, hook, whyChosen, caption, strategy (a short 1-3 word editorial lane), scores object with hook, context, payoff, retention, audienceFit, platformFit (integers 0-100), and overallScore (integer 0-100). Prefer exact transcript boundaries.\n\nTRANSCRIPT\n${transcript.slice(0, 110000)}`,
       },
     ],
   });
@@ -1379,7 +1423,8 @@ async function chooseClips(job) {
       };
     })
     .filter((clip) => Number.isFinite(clip.start) && Number.isFinite(clip.end) && clip.end - clip.start >= 8)
-    .sort((a, b) => Number(b.overallScore) - Number(a.overallScore));
+    .sort((a, b) => Number(b.overallScore) - Number(a.overallScore))
+    .slice(0, requestedOutputCount);
 }
 
 async function renderClip(job, clip, planTier = job.planTier) {
@@ -1825,6 +1870,16 @@ function hasPaidPlan(value) {
   return normalizePlanTier(value) !== "free";
 }
 
+function hasProBatchOutput(value) {
+  return new Set(["pro", "studio", "business"]).has(normalizePlanTier(value));
+}
+
+function normalizeRequestedOutputCount(value, planTier) {
+  if (!hasProBatchOutput(planTier)) return 8;
+  const count = Number.parseInt(value, 10);
+  return Number.isFinite(count) ? Math.min(10, Math.max(1, count)) : 5;
+}
+
 function hasCreativeAccess(value) {
   return proFeaturesOpen || new Set(["pro", "studio", "business"]).has(normalizePlanTier(value));
 }
@@ -2062,6 +2117,46 @@ function removeLocalFile(filePath, allowedRoot) {
   const relative = path.relative(root, target);
   if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return;
   if (fs.existsSync(target) && fs.statSync(target).isFile()) fs.unlinkSync(target);
+}
+
+function finalizeBatchOutputCount(batchId) {
+  if (!batchId) return;
+  const group = [...jobs.values()]
+    .filter((job) => job.batchId === batchId)
+    .sort((a, b) => Number(a.batchPosition || 0) - Number(b.batchPosition || 0));
+  if (!group.length || group.some((job) => job.status === "queued" || job.status === "processing")) return;
+  if (group.every((job) => job.batchOutputFinalized)) return;
+  const owner = group[0];
+  if (!owner.customOutputCountEnabled) {
+    group.forEach((job) => {
+      job.batchOutputFinalized = true;
+      persistJob(job);
+    });
+    return;
+  }
+
+  const requested = Math.min(10, Math.max(1, Number(owner.requestedOutputCount) || 5));
+  const candidates = group.flatMap((job) => (
+    job.status === "ready" && job.processingMode === "ai"
+      ? (job.clips || []).map((clip) => ({ job, clip }))
+      : []
+  ));
+  const selected = candidates
+    .sort((left, right) => Number(right.clip.overallScore || 0) - Number(left.clip.overallScore || 0))
+    .slice(0, requested);
+  const selectedKeys = new Set(selected.map(({ job, clip }) => `${job.id}:${clip.id}`));
+  const rankByKey = new Map(selected.map(({ job, clip }, index) => [`${job.id}:${clip.id}`, index + 1]));
+
+  group.forEach((job) => {
+    if (job.status === "ready" && job.processingMode === "ai") {
+      job.clips = (job.clips || [])
+        .filter((clip) => selectedKeys.has(`${job.id}:${clip.id}`))
+        .map((clip) => ({ ...clip, rank: rankByKey.get(`${job.id}:${clip.id}`) }));
+      job.stage = `${job.clips.length} selected from this source · ${selected.length} of ${requested} batch klips ready`;
+    }
+    job.batchOutputFinalized = true;
+    persistJob(job);
+  });
 }
 
 function maybeStartBatchMontage(batchId) {
@@ -2418,6 +2513,7 @@ function restoreInterruptedProject(job) {
       Object.assign(job, {
         status: "queued",
         progress: 2,
+        phase: "queued",
         stage: "Recovered after restart · waiting for the processor",
         resumeAfterRestart: true,
       });
@@ -2425,9 +2521,11 @@ function restoreInterruptedProject(job) {
     } else {
       Object.assign(job, {
         status: "failed",
-        progress: 100,
+        progress: Math.min(95, Math.max(2, Number(job.progress || 2))),
+        phase: "failed",
         stage: "Processing was interrupted",
         error: "This project was interrupted and its source is no longer available. Upload the source again to restart processing.",
+        failedAt: new Date().toISOString(),
       });
     }
   }
@@ -2454,6 +2552,8 @@ function resumePersistedProjects() {
     enqueueProject(job);
   }
   const waitingBatches = new Set([...jobs.values()].filter((job) => job.montage?.status === "waiting").map((job) => job.batchId));
+  const completedBatches = new Set([...jobs.values()].map((job) => job.batchId).filter(Boolean));
+  for (const batchId of completedBatches) finalizeBatchOutputCount(batchId);
   for (const batchId of waitingBatches) maybeStartBatchMontage(batchId);
 }
 

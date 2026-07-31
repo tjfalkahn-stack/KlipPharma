@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=0.25.1" />
+  <link rel="stylesheet" href="/styles.css?v=0.28.0" />
 </head>
 <body>
   <header class="topbar">
@@ -237,10 +237,15 @@
                 <span class="preview-detail">Your source video is still saved.</span>
                 <button class="retry-preview" type="button">Retry preview</button>
               </div>
+              <div class="caption-preview-layer position-bottom hidden" aria-hidden="true">
+                <span class="caption-preview-text style-bold"></span>
+              </div>
               <div class="meme-preview-layer hidden" aria-hidden="true">
                 <img class="meme-preview-image hidden" alt="" />
                 <strong class="meme-preview-headline hidden"></strong>
               </div>
+              <span class="watermark-preview custom-watermark-preview position-top-right hidden" aria-hidden="true"></span>
+              <span class="watermark-preview brand-watermark-preview position-top-left hidden" aria-hidden="true">KP • KLIPPHARMA</span>
             </div>
             <button class="preview-cut" type="button"><span>▶</span> Preview selected cut</button>
           </div>
@@ -318,6 +323,7 @@
                 <label><span>SHOW FROM <output class="meme-start-label">0:00.0</output></span><input class="meme-start" type="range" min="0" step="0.1" /></label>
                 <label><span>HIDE AT <output class="meme-end-label">0:00.0</output></span><input class="meme-end" type="range" min="0" step="0.1" /></label>
               </div>
+              <p class="meme-timing-note">These controls time the headline/picture layer. Captions are controlled separately above. New overlays default to the full selected klip.</p>
             </div>
             <div class="meme-pro-lock hidden" data-meme-pro-lock>
               <strong>Pro feature</strong>
@@ -336,9 +342,18 @@
           </div>
         </section>
         <div class="score-bars"></div>
+        <section class="final-render-preview hidden" aria-live="polite">
+          <div class="final-render-copy">
+            <small>EXACT PRE-EXPORT REVIEW</small>
+            <strong>Preview the finished klip</strong>
+            <p>This is the actual rendered MP4—including your edited words, meme or picture, framing, timing, watermark, and audio. Approve it before downloading.</p>
+          </div>
+          <video class="final-render-video" controls preload="metadata" playsinline></video>
+          <span class="final-render-saved">Saved to this project automatically</span>
+        </section>
         <div class="actions">
-          <button class="render">Create vertical clip</button>
-          <a class="download hidden" download>Download MP4</a>
+          <button class="render">Build exact final preview</button>
+          <a class="download hidden" download>Approve &amp; download MP4</a>
           <button class="delete-export hidden" type="button">Delete rendered MP4</button>
           <div class="feedback" aria-label="Rate this recommendation">
             <button data-rating="good" title="Good">✓</button><button data-rating="almost" title="Almost">~</button><button data-rating="bad" title="Bad">×</button><button data-rating="wrong-topic" title="Wrong topic">↯</button>
@@ -436,6 +451,6 @@
   </div>
 
   <div class="toast hidden" id="toast"></div>
-  <script src="/app.js?v=0.25.1" type="module"></script>
+  <script src="/app.js?v=0.28.0" type="module"></script>
 </body>
 </html>

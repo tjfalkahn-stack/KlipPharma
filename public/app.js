@@ -1004,11 +1004,15 @@ function renderProjectClips(project, grid) {
     const renderButton = node.querySelector(".render");
     const download = node.querySelector(".download");
     const deleteExport = node.querySelector(".delete-export");
+    const finalPreview = node.querySelector(".final-render-preview");
+    const finalPreviewVideo = node.querySelector(".final-render-video");
     if (clip.renderStatus === "ready" && clip.downloadUrl) {
       renderButton.classList.add("hidden");
       download.href = clip.downloadUrl;
       download.classList.remove("hidden");
       deleteExport.classList.remove("hidden");
+      finalPreviewVideo.src = clip.downloadUrl;
+      finalPreview.classList.remove("hidden");
     }
     renderButton.addEventListener("click", async (event) => {
       try {
@@ -1225,11 +1229,17 @@ async function deleteClipExport(project, clip, card, button) {
   clip.renderStatus = "idle";
   delete clip.downloadUrl;
   card.querySelector(".download").classList.add("hidden");
+  const finalPreview = card.querySelector(".final-render-preview");
+  const finalPreviewVideo = card.querySelector(".final-render-video");
+  finalPreview.classList.add("hidden");
+  finalPreviewVideo.pause();
+  finalPreviewVideo.removeAttribute("src");
+  finalPreviewVideo.load();
   button.classList.add("hidden");
   const render = card.querySelector(".render");
   render.classList.remove("hidden");
   render.disabled = false;
-  render.textContent = "Create vertical clip";
+  render.textContent = "Build exact final preview";
   toast("Rendered MP4 deleted.");
 }
 
@@ -1305,6 +1315,8 @@ function installTrimmer(project, clip, card) {
   const resetButton = card.querySelector(".reset-cut");
   const renderButton = card.querySelector(".render");
   const download = card.querySelector(".download");
+  const finalPreview = card.querySelector(".final-render-preview");
+  const finalPreviewVideo = card.querySelector(".final-render-video");
   const captionsEnabled = card.querySelector(".captions-enabled");
   const captionText = card.querySelector(".caption-text");
   const captionStyle = card.querySelector(".caption-style");
@@ -1332,6 +1344,10 @@ function installTrimmer(project, clip, card) {
   const memePreviewLayer = card.querySelector(".meme-preview-layer");
   const memePreviewImage = card.querySelector(".meme-preview-image");
   const memePreviewHeadline = card.querySelector(".meme-preview-headline");
+  const captionPreviewLayer = card.querySelector(".caption-preview-layer");
+  const captionPreviewText = card.querySelector(".caption-preview-text");
+  const customWatermarkPreview = card.querySelector(".custom-watermark-preview");
+  const brandWatermarkPreview = card.querySelector(".brand-watermark-preview");
   const focusInput = card.querySelector(".focus-x");
   const focusLabel = card.querySelector(".focus-label");
   const focusPresets = [...card.querySelectorAll(".focus-presets button")];
@@ -1365,6 +1381,11 @@ function installTrimmer(project, clip, card) {
     memeEnd: Number.isFinite(Number(clip.memeEnd)) ? Number(clip.memeEnd) : Math.max(1, original.end - original.start),
     memeImageUrl: clip.memeImageUrl || "",
   };
+  const initialSelectedDuration = Math.max(0.1, state.end - state.start);
+  if (state.memeEnabled && state.memeEnd - state.memeStart <= 0.5) {
+    state.memeStart = 0;
+    state.memeEnd = initialSelectedDuration;
+  }
   const mediaDuration = Math.max(Number(project.duration) || state.end, state.end);
   const signature = () => JSON.stringify(state);
   let lastSaved = signature();
@@ -1462,6 +1483,38 @@ function installTrimmer(project, clip, card) {
     }
   }
 
+  function paintCaptionAndWatermarkPreview(currentTime = state.start) {
+    const selectedDuration = Math.max(0.1, state.end - state.start);
+    const relativeTime = Math.max(0, Math.min(selectedDuration, Number(currentTime) - state.start));
+    const words = String(state.captionText || "").trim().split(/\s+/).filter(Boolean);
+    let visibleCaption = "";
+    if (words.length) {
+      const maxCues = Math.max(1, Math.floor(Math.max(1, selectedDuration) / 1.2));
+      const chunkSize = Math.max(4, Math.ceil(words.length / maxCues));
+      const chunks = [];
+      for (let index = 0; index < words.length; index += chunkSize) {
+        chunks.push(words.slice(index, index + chunkSize).join(" "));
+      }
+      const cueDuration = Math.max(0.4, selectedDuration / chunks.length);
+      const cueIndex = Math.min(chunks.length - 1, Math.floor(relativeTime / cueDuration));
+      visibleCaption = chunks[Math.max(0, cueIndex)] || "";
+    }
+    const showCaption = state.captionsEnabled && Boolean(visibleCaption);
+    captionPreviewLayer.className = `caption-preview-layer position-${state.captionPosition} ${showCaption ? "" : "hidden"}`.trim();
+    captionPreviewText.className = `caption-preview-text style-${state.captionStyle}`;
+    captionPreviewText.textContent = visibleCaption;
+
+    const customWatermark = String(state.watermarkText || "").trim();
+    customWatermarkPreview.textContent = customWatermark;
+    customWatermarkPreview.className = `watermark-preview custom-watermark-preview position-${state.watermarkPosition} ${customWatermark ? "" : "hidden"}`.trim();
+    brandWatermarkPreview.className = `watermark-preview brand-watermark-preview position-top-left ${isPaidPlan() ? "hidden" : ""}`.trim();
+  }
+
+  function paintCompositePreview(currentTime = state.start) {
+    paintMemePreview(currentTime);
+    paintCaptionAndWatermarkPreview(currentTime);
+  }
+
   async function recoverPreview() {
     retryPreview.disabled = true;
     retryPreview.textContent = "Converting…";
@@ -1508,7 +1561,7 @@ function installTrimmer(project, clip, card) {
     focusInput.value = String(state.focusX);
     focusLabel.textContent = state.focusX < 35 ? "Left" : state.focusX > 65 ? "Right" : "Center";
     focusPresets.forEach((button) => button.classList.toggle("active", Number(button.dataset.focus) === Number(state.focusX)));
-    paintMemePreview(video.currentTime || state.start);
+    paintCompositePreview(video.currentTime || state.start);
     if (previewReady && Number.isFinite(seekTo)) {
       previewingSelection = false;
       video.pause();
@@ -1519,8 +1572,13 @@ function installTrimmer(project, clip, card) {
   function markCutChanged() {
     renderButton.classList.remove("hidden");
     renderButton.disabled = false;
-    renderButton.textContent = "Create vertical clip";
+    renderButton.textContent = "Rebuild exact final preview";
     download.classList.add("hidden");
+    finalPreview.classList.add("hidden");
+    finalPreviewVideo.pause();
+    finalPreviewVideo.removeAttribute("src");
+    finalPreviewVideo.load();
+    paintCompositePreview(video.currentTime || state.start);
   }
 
   async function save() {
@@ -1633,7 +1691,13 @@ function installTrimmer(project, clip, card) {
     queueSave();
   });
   [
-    [memeEnabled, "change", () => { state.memeEnabled = memeEnabled.checked; }],
+    [memeEnabled, "change", () => {
+      state.memeEnabled = memeEnabled.checked;
+      if (state.memeEnabled && state.memeEnd - state.memeStart <= 0.5) {
+        state.memeStart = 0;
+        state.memeEnd = Math.max(0.1, state.end - state.start);
+      }
+    }],
     [memeHeadline, "input", () => { state.memeHeadline = memeHeadline.value; }],
     [memeTemplate, "change", () => { state.memeTemplate = memeTemplate.value; }],
     [memePosition, "change", () => { state.memePosition = memePosition.value; }],
@@ -1655,7 +1719,7 @@ function installTrimmer(project, clip, card) {
   ].forEach(([control, eventName, update]) => control.addEventListener(eventName, () => {
     update();
     markCutChanged();
-    paintMemePreview(video.currentTime || state.start);
+    paintCompositePreview(video.currentTime || state.start);
     queueSave();
   }));
 
@@ -1678,7 +1742,7 @@ function installTrimmer(project, clip, card) {
       memeImageInput.value = "";
       lastSaved = signature();
       markCutChanged();
-      paintMemePreview(video.currentTime || state.start);
+      paintCompositePreview(video.currentTime || state.start);
       toast("Overlay image added.");
     } catch (error) {
       memeImageName.textContent = state.memeImageUrl ? "Overlay image added" : "No image added";
@@ -1698,7 +1762,7 @@ function installTrimmer(project, clip, card) {
     memeImageRemove.classList.add("hidden");
     lastSaved = signature();
     markCutChanged();
-    paintMemePreview(video.currentTime || state.start);
+    paintCompositePreview(video.currentTime || state.start);
   });
   focusInput.addEventListener("input", () => {
     state.focusX = Number(focusInput.value);
@@ -1726,7 +1790,7 @@ function installTrimmer(project, clip, card) {
   });
 
   video.addEventListener("timeupdate", () => {
-    paintMemePreview(video.currentTime);
+    paintCompositePreview(video.currentTime);
     if (previewingSelection && video.currentTime >= state.end) {
       video.pause();
       video.currentTime = state.start;
@@ -1762,9 +1826,9 @@ function requestCompatiblePreview(project) {
   return task;
 }
 
-async function renderVideo(projectId, clipId, button, card) {
+  async function renderVideo(projectId, clipId, button, card) {
   button.disabled = true;
-  button.textContent = "Rendering…";
+  button.textContent = "Building exact preview…";
   const response = await fetch(`/api/projects/${projectId}/clips/${clipId}/render`, { method: "POST" });
   if (!response.ok) { button.disabled = false; button.textContent = "Try again"; return toast("Could not start render."); }
   const check = async () => {
@@ -1775,8 +1839,13 @@ async function renderVideo(projectId, clipId, button, card) {
       const link = card.querySelector(".download");
       link.href = clip.downloadUrl;
       link.classList.remove("hidden");
+      const finalPreview = card.querySelector(".final-render-preview");
+      const finalPreviewVideo = card.querySelector(".final-render-video");
+      finalPreviewVideo.src = clip.downloadUrl;
+      finalPreview.classList.remove("hidden");
+      finalPreview.scrollIntoView({ behavior: "smooth", block: "center" });
       card.querySelector(".delete-export").classList.remove("hidden");
-      toast("Vertical clip is ready.");
+      toast("Exact final preview is ready. Review it before downloading.");
     } else if (clip.renderStatus === "failed") {
       button.disabled = false; button.textContent = "Try again"; toast(clip.renderError || "Render failed.");
     } else setTimeout(check, 2000);

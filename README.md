@@ -4,6 +4,23 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
+## Version 0.28.0 — Production YouTube importer
+
+- Railway is explicitly configured to build the Dockerfile that installs FFmpeg and the pinned `yt-dlp` runtime.
+- YouTube imports now fall back from the `yt-dlp` executable to the Python module on hosts where the executable is not exposed on `PATH`.
+- The v0.27 honest composite preview remains included.
+
+## Version 0.27.0 — Honest live composite preview
+
+- The editor preview now shows caption words, caption style, and the selected top/middle/bottom safe-zone position while the source plays.
+- The editor preview now shows the creator watermark in its selected corner and the locked KlipPharma mark for free exports.
+- Live caption chunks use the same timing/chunking rules as the final MP4 renderer, so the editing preview reflects the saved instructions before rendering.
+- The exact rendered MP4 review remains the final source of truth before download.
+
+## Version 0.26.0 — Exact final preview + faithful overlays
+
+Every individual klip now renders an exact pre-export MP4 preview before the download is offered. The preview uses the same finished file as export, so edited captions, headline or picture overlays, crop position, timing, watermarks, and audio can be reviewed together. Caption rendering now uses a fixed 1080×1920 canvas to prevent oversized words from covering the speaker. Meme text position, selected text color, white/black box color, box style, and display timing are preserved literally; new overlays default to the full selected klip.
+
 ## Version 0.25.1 — Pro batch entitlement fix
 
 - The 1–10 finished-klip selector now honors the existing beta Pro-feature flag for owner testing.

@@ -1110,7 +1110,7 @@ async function importYouTubeSource(job, canonicalUrl) {
     "--print", "after_move:%(filepath)s",
     canonicalUrl,
   ];
-  const result = await runYouTubeDownload(process.env.YT_DLP_PATH || "yt-dlp", args, job);
+  const result = await runYouTubeDownloadWithFallback(args, job);
   const candidates = fs.readdirSync(uploadDir)
     .filter((name) => name.startsWith(`${job.id}.`) && !name.endsWith(".part") && !name.endsWith(".ytdl"))
     .map((name) => path.join(uploadDir, name))
@@ -1159,6 +1159,34 @@ function runYouTubeDownload(command, args, job) {
   });
 }
 
+async function runYouTubeDownloadWithFallback(args, job) {
+  const configuredPath = String(process.env.YT_DLP_PATH || "").trim();
+  const candidates = [
+    ...(configuredPath ? [{ command: configuredPath, prefix: [] }] : []),
+    { command: "yt-dlp", prefix: [] },
+    { command: "python3", prefix: ["-m", "yt_dlp"] },
+    { command: "python", prefix: ["-m", "yt_dlp"] },
+  ];
+  const attempted = new Set();
+
+  for (const candidate of candidates) {
+    const signature = `${candidate.command}\0${candidate.prefix.join("\0")}`;
+    if (attempted.has(signature)) continue;
+    attempted.add(signature);
+    try {
+      return await runYouTubeDownload(candidate.command, [...candidate.prefix, ...args], job);
+    } catch (error) {
+      const message = String(error?.message || "");
+      const unavailable = error?.code === "ENOENT" || /No module named (?:yt_dlp|'yt_dlp')/i.test(message);
+      if (!unavailable) throw error;
+    }
+  }
+
+  const error = new Error("No yt-dlp executable or Python yt_dlp module is available.");
+  error.code = "YOUTUBE_IMPORTER_MISSING";
+  throw error;
+}
+
 function removeYouTubeWorkingFiles(jobId) {
   for (const name of fs.readdirSync(uploadDir)) {
     if (name.startsWith(`${jobId}.`)) removeLocalFile(path.join(uploadDir, name), uploadDir);
@@ -1167,7 +1195,9 @@ function removeYouTubeWorkingFiles(jobId) {
 
 function friendlyYouTubeError(error) {
   const message = String(error?.message || "");
-  if (error?.code === "ENOENT") return "The YouTube importer is not installed on this server yet.";
+  if (error?.code === "ENOENT" || error?.code === "YOUTUBE_IMPORTER_MISSING") {
+    return "The YouTube importer is not installed on this server yet.";
+  }
   if (/private video|members-only|age.?restricted|sign in|cookies|not available|unavailable/i.test(message)) {
     return "YouTube would not release this source. Private, protected, age-restricted, or account-only videos must be downloaded from YouTube Studio first.";
   }
@@ -1445,11 +1475,9 @@ async function renderClip(job, clip, planTier = job.planTier) {
         text: segment.text,
       }));
     if (clip.captionsEnabled !== false && captionCues.length) {
-      const subtitlePath = path.join(tempDir, "captions.srt");
-      const srt = captionCues.map((cue, index) => `${index + 1}\n${srtTime(cue.start)} --> ${srtTime(cue.end)}\n${String(cue.text).replaceAll("\n", " ")}\n`).join("\n");
-      fs.writeFileSync(subtitlePath, srt);
-      const escapedSubs = subtitlePath.replaceAll("\\", "/").replaceAll(":", "\\:").replaceAll("'", "\\'");
-      filter += `,subtitles='${escapedSubs}':force_style='${captionForceStyle(clip.captionStyle, clip.captionPosition)}'`;
+      const subtitlePath = path.join(tempDir, "captions.ass");
+      writeCaptionSubtitle(subtitlePath, captionCues, clip.captionStyle, clip.captionPosition);
+      filter += watermarkFilter(subtitlePath);
     }
     filter = appendExportWatermarks(filter, tempDir, {
       duration,
@@ -1542,6 +1570,45 @@ function captionForceStyle(style = "bold", position = "bottom") {
   return `${styles[style] || styles.bold},${positions[position] || positions.bottom}`;
 }
 
+function writeCaptionSubtitle(destination, cues, style = "bold", position = "bottom") {
+  const positions = {
+    bottom: { alignment: 2, margin: 190 },
+    middle: { alignment: 5, margin: 0 },
+    top: { alignment: 8, margin: 140 },
+  };
+  const styles = {
+    bold: { size: 54, bold: -1, primary: "&H00FFFFFF", outline: 7 },
+    clean: { size: 46, bold: 0, primary: "&H00FFFFFF", outline: 5 },
+    karaoke: { size: 54, bold: -1, primary: "&H003CEFB8", outline: 7 },
+    minimal: { size: 40, bold: 0, primary: "&H00FFFFFF", outline: 4 },
+  };
+  const selectedPosition = positions[position] || positions.bottom;
+  const selectedStyle = styles[style] || styles.bold;
+  const events = cues
+    .map((cue) => {
+      const start = Math.max(0, Number(cue.start) || 0);
+      const end = Math.max(start + 0.1, Number(cue.end) || start + 0.1);
+      const text = escapeAssText(cue.text);
+      return `Dialogue: 0,${assTime(start)},${assTime(end)},Caption,,0,0,0,,${text}`;
+    })
+    .join("\n");
+  fs.writeFileSync(destination, `[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+ScaledBorderAndShadow: yes
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Caption,Arial,${selectedStyle.size},${selectedStyle.primary},${selectedStyle.primary},&H00000000,&H00000000,${selectedStyle.bold},0,0,0,100,100,0,0,1,${selectedStyle.outline},0,${selectedPosition.alignment},90,90,${selectedPosition.margin},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+${events}
+`);
+}
+
 function appendExportWatermarks(filter, tempDir, {
   duration,
   customText,
@@ -1617,13 +1684,10 @@ function writeMemeHeadlineSubtitle(destination, text, duration, clip) {
   const primary = cssHexToAss(color);
   const boxHex = boxColor === "white" ? "#ffffff" : "#000000";
   const back = background === "none" ? "&H00000000" : cssHexToAss(boxHex, background === "transparent" ? "66" : "00");
+  const outlineColor = background === "none" ? "&H00000000" : back;
   const borderStyle = background === "none" ? 1 : 3;
   const outline = background === "none" ? 4 : 0;
-  const safeText = normalizeMemeHeadline(text)
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join("\\N");
+  const safeText = escapeAssText(normalizeMemeHeadline(text));
   const start = normalizeAudioSeconds(clip.memeStart, 0, duration);
   const end = Math.max(start + 0.1, normalizeAudioSeconds(clip.memeEnd, duration, duration));
   fs.writeFileSync(destination, `[Script Info]
@@ -1635,12 +1699,23 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Meme,Arial,${fontSize},${primary},${primary},&H00000000,${back},-1,0,0,0,100,100,0,0,${borderStyle},${outline},0,${alignments[position]},65,65,${margins[position]},1
+Style: Meme,Arial,${fontSize},${primary},${primary},${outlineColor},${back},-1,0,0,0,100,100,0,0,${borderStyle},${outline},0,${alignments[position]},65,65,${margins[position]},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 Dialogue: 0,${assTime(start)},${assTime(end)},Meme,,0,0,0,,${safeText}
 `);
+}
+
+function escapeAssText(value) {
+  return String(value || "")
+    .replaceAll("\\", "＼")
+    .replaceAll("{", "｛")
+    .replaceAll("}", "｝")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\\N");
 }
 
 function watermarkFilter(watermarkPath) {
@@ -2205,11 +2280,10 @@ async function renderBatchMontage(group, owner, editedSegments = null, planTier 
       const piecePath = path.join(tempDir, `piece-${String(index).padStart(3, "0")}.mp4`);
       let filter = verticalCropFilter(segment.focusX, true);
       if (owner.montage.captionsEnabled !== false && segment.captionText) {
-        const captionPath = path.join(tempDir, `captions-${String(index).padStart(3, "0")}.srt`);
+        const captionPath = path.join(tempDir, `captions-${String(index).padStart(3, "0")}.ass`);
         const cues = captionCuesFromText(segment.captionText, segment.duration);
-        fs.writeFileSync(captionPath, cues.map((cue, cueIndex) => `${cueIndex + 1}\n${srtTime(cue.start)} --> ${srtTime(cue.end)}\n${cue.text}\n`).join("\n"));
-        const escapedCaptions = captionPath.replaceAll("\\", "/").replaceAll(":", "\\:").replaceAll("'", "\\'");
-        filter += `,subtitles='${escapedCaptions}':force_style='${captionForceStyle(owner.montage.captionStyle, owner.montage.captionPosition)}'`;
+        writeCaptionSubtitle(captionPath, cues, owner.montage.captionStyle, owner.montage.captionPosition);
+        filter += watermarkFilter(captionPath);
       }
       filter = appendExportWatermarks(filter, tempDir, {
         duration: segment.duration,

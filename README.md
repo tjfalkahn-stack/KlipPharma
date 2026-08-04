@@ -111,6 +111,14 @@ Authorization: Bearer ${KLIPDOSE_SHARED_API_KEY}
 
 The shared key must match Klipdose's server-only `KLIPPHARMA_API_KEY`. Duplicate requests with the same `idempotencyKey` return the existing project instead of creating another one. Set `KLIPDOSE_PROJECT_OWNER_ID` in production account mode when created projects should belong to a specific KlipPharma user.
 
+To retrieve the correct `KLIPDOSE_PROJECT_OWNER_ID` from production, sign in as the account that should own incoming projects and call:
+
+```text
+GET /api/account/klipdose-owner-id
+```
+
+For a normal account this returns `users.id`. For an active Business workspace this returns `workspaces.owner_user_id`.
+
 ## Accounts and production project ownership
 
 Version 0.14 adds an optional production account layer without changing the local workflow. With no `DATABASE_URL` and `AUTH_MODE=off`, KlipPharma automatically uses one local owner and opens directly to the studio. This is the mode used by `npm run dev` on your Mac.

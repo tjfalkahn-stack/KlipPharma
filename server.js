@@ -38,6 +38,7 @@ import {
   validateCredentials,
 } from "./lib/database.js";
 import { isArchivedKlipdoseProject, isKlipdoseProject, klipdoseIncomingStats, klipdoseProjectForClient, visibleKlipdoseProjects } from "./lib/incoming-klipdose.js";
+import { klipdoseOwnerConfigForRequest } from "./lib/klipdose-owner-config.js";
 import {
   assertOwnedKey,
   createDirectUpload,
@@ -559,6 +560,13 @@ app.get("/api/account/dashboard", requireUser, async (req, res) => {
     },
     projects,
     incomingKlipdose,
+  });
+});
+
+app.get("/api/account/klipdose-owner-id", requireUser, (req, res) => {
+  res.json({
+    ...klipdoseOwnerConfigForRequest(req),
+    envName: "KLIPDOSE_PROJECT_OWNER_ID",
   });
 });
 

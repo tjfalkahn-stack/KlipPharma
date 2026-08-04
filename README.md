@@ -96,8 +96,20 @@ run it on port `3100`; the FPAI Tax OS can continue using its existing port.
 
 - Node.js 20+
 - `OPENAI_API_KEY` in `.env.local`
+- `KLIPDOSE_SHARED_API_KEY` when accepting server-to-server project handoffs from Klipdose
 
 FFmpeg is bundled through `ffmpeg-static`, so a separate Homebrew FFmpeg install is not required.
+
+## Klipdose integration
+
+KlipPharma accepts secure Klipdose project handoffs at:
+
+```text
+POST /api/integrations/klipdose/projects
+Authorization: Bearer ${KLIPDOSE_SHARED_API_KEY}
+```
+
+The shared key must match Klipdose's server-only `KLIPPHARMA_API_KEY`. Duplicate requests with the same `idempotencyKey` return the existing project instead of creating another one. Set `KLIPDOSE_PROJECT_OWNER_ID` in production account mode when created projects should belong to a specific KlipPharma user.
 
 ## Accounts and production project ownership
 

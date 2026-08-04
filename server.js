@@ -3,6 +3,7 @@ import multer from "multer";
 import OpenAI from "openai";
 import Stripe from "stripe";
 import ffmpegPath from "ffmpeg-static";
+import { z } from "zod";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -77,6 +78,7 @@ const previewTasks = new Map();
 const batchMontageTasks = new Map();
 const processingQueue = [];
 const authAttempts = new Map();
+const integrationAttempts = new Map();
 const maxConcurrentProjects = 2;
 const proFeaturesOpen = !new Set(["false", "0", "off", "no"])
   .has(String(process.env.PRO_FEATURES_OPEN ?? "true").trim().toLowerCase());
@@ -115,12 +117,33 @@ const supportedLanguages = {
 const supportedDubVoices = new Set(["alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"]);
 let activeProjects = 0;
 
+const klipdoseProjectSchema = z.object({
+  klipdoseCreatorId: z.string().min(1),
+  platform: z.string().min(1),
+  sourceContentId: z.string().min(1),
+  sourceUrl: z.string().url(),
+  creatorName: z.string().min(1),
+  title: z.string().min(1),
+  thumbnailUrl: z.string().url().nullable().optional(),
+  opportunityScore: z.number().min(0).max(100),
+  confidence: z.number().min(0).max(100),
+  evidence: z.record(z.unknown()).default({}),
+  recommendedAction: z.string().min(1),
+  requestedStartTimestamp: z.number().nullable().optional(),
+  requestedEndTimestamp: z.number().nullable().optional(),
+  captionDraft: z.string().nullable().optional(),
+  hashtags: z.array(z.string()).nullable().optional(),
+  language: z.string().default("en"),
+  callbackUrl: z.string().url().nullable().optional(),
+  idempotencyKey: z.string().min(8),
+});
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: uploadDir,
     filename: (_req, file, cb) => cb(null, `${crypto.randomUUID()}${path.extname(file.originalname).toLowerCase()}`),
   }),
-  limits: { fileSize: 1024 * 1024 * 1024, files: 10 },
+  limits: { fileSize: 2 * 1024 * 1024 * 1024, files: 10 },
   fileFilter: (_req, file, cb) => {
     const supportedExtension = new Set([".mov", ".mp4", ".m4v", ".webm", ".mp3", ".m4a", ".wav", ".aac", ".ogg", ".flac", ".mpeg", ".mpg"])
       .has(path.extname(file.originalname).toLowerCase());
@@ -167,6 +190,125 @@ app.post("/api/billing/webhook", express.raw({ type: "application/json" }), asyn
 
 app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "public")));
+
+function timingSafeSecretEqual(provided, expected) {
+  if (!provided || !expected) return false;
+  const providedBuffer = Buffer.from(String(provided));
+  const expectedBuffer = Buffer.from(String(expected));
+  return providedBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(providedBuffer, expectedBuffer);
+}
+
+function requireKlipdoseIntegration(req, res, next) {
+  const configured = String(process.env.KLIPDOSE_SHARED_API_KEY || "").trim();
+  const header = String(req.headers.authorization || "");
+  const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
+  if (!timingSafeSecretEqual(token, configured)) return res.status(401).json({ error: "Unauthorized." });
+  const ip = req.ip || req.socket?.remoteAddress || "unknown";
+  const now = Date.now();
+  const bucket = integrationAttempts.get(ip) ?? { count: 0, resetAt: now + 60_000 };
+  if (bucket.resetAt < now) Object.assign(bucket, { count: 0, resetAt: now + 60_000 });
+  bucket.count += 1;
+  integrationAttempts.set(ip, bucket);
+  if (bucket.count > 30) return res.status(429).json({ error: "Too many integration requests." });
+  return next();
+}
+
+function existingKlipdoseProject(idempotencyKey) {
+  return [...jobs.values()].find((job) => job.integrationSource === "klipdose" && job.idempotencyKey === idempotencyKey);
+}
+
+function createKlipdoseProject(input) {
+  const source = normalizeYouTubeSource(input.sourceUrl);
+  const id = crypto.randomUUID();
+  const job = {
+    id,
+    userId: process.env.KLIPDOSE_PROJECT_OWNER_ID || "local-owner",
+    workspaceId: null,
+    batchId: id,
+    batchPosition: 1,
+    batchSize: 1,
+    status: "processing",
+    progress: 3,
+    phase: "import",
+    stage: "Accepted from Klipdose · connecting to YouTube source",
+    originalName: sanitizeYouTubeTitle(input.title),
+    filePath: null,
+    objectKey: null,
+    mimeType: "video/mp4",
+    sourceProvider: "youtube",
+    sourceVideoId: source.videoId,
+    sourceUrl: source.canonicalUrl,
+    sourceReady: false,
+    integrationSource: "klipdose",
+    klipdoseCreatorId: input.klipdoseCreatorId,
+    sourceContentId: input.sourceContentId,
+    idempotencyKey: input.idempotencyKey,
+    callbackUrl: input.callbackUrl || null,
+    requestedStartTimestamp: input.requestedStartTimestamp ?? null,
+    requestedEndTimestamp: input.requestedEndTimestamp ?? null,
+    captionDraft: input.captionDraft ?? null,
+    hashtags: input.hashtags ?? null,
+    language: input.language,
+    opportunityScore: input.opportunityScore,
+    confidence: input.confidence,
+    recommendedAction: input.recommendedAction,
+    evidence: input.evidence,
+    processingMode: "ai",
+    sourceLanguage: normalizeSourceLanguage(input.language),
+    translationLanguage: normalizeTranslationLanguage("original"),
+    audioTranslation: "none",
+    dubVoice: normalizeDubVoice("alloy"),
+    contentType: normalizeCreatorMode("auto"),
+    clipLength: normalizeClipLength("smart"),
+    createMontage: false,
+    watermarkText: "",
+    watermarkPosition: "bottom-right",
+    planTier: "business",
+    requestedOutputCount: 3,
+    customOutputCountEnabled: true,
+    klipPharmaWatermarkRequired: false,
+    audience: "Klipdose creator opportunity",
+    goal: input.recommendedAction,
+    platform: "TikTok / Reels / Shorts",
+    createdAt: new Date().toISOString(),
+  };
+  jobs.set(id, job);
+  persistJob(job);
+  importYouTubeSource(job, source.canonicalUrl)
+    .catch((error) => {
+      console.error("Klipdose YouTube project import failed:", { projectId: job.id, message: error.message });
+      removeYouTubeWorkingFiles(job.id);
+      Object.assign(job, {
+        status: "failed",
+        progress: Math.min(95, Math.max(3, Number(job.progress || 3))),
+        phase: "failed",
+        stage: "Klipdose source import failed",
+        error: friendlyYouTubeError(error),
+        failedAt: new Date().toISOString(),
+      });
+      persistJob(job);
+    });
+  return job;
+}
+
+app.post("/api/integrations/klipdose/projects", requireKlipdoseIntegration, (req, res) => {
+  const parsed = klipdoseProjectSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid Klipdose project payload.", issues: parsed.error.issues.map((issue) => ({ path: issue.path, message: issue.message })) });
+  try {
+    const duplicate = existingKlipdoseProject(parsed.data.idempotencyKey);
+    const project = duplicate ?? createKlipdoseProject(parsed.data);
+    console.log("Klipdose handoff accepted", { projectId: project.id, duplicate: Boolean(duplicate), sourceContentId: parsed.data.sourceContentId });
+    return res.status(duplicate ? 200 : 202).json({
+      success: true,
+      projectId: project.id,
+      status: duplicate ? "DUPLICATE" : "ACCEPTED",
+      idempotencyKey: parsed.data.idempotencyKey,
+    });
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Klipdose project could not be created." });
+  }
+});
+
 app.use(attachUser);
 app.use("/exports", requireUser, authorizeExport, express.static(exportDir));
 

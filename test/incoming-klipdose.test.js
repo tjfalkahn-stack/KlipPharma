@@ -6,6 +6,7 @@ import {
   klipdoseProjectForClient,
   visibleKlipdoseProjects,
 } from "../lib/incoming-klipdose.js";
+import { parseIncomingKlipdoseResponse } from "../lib/incoming-api-contract.js";
 
 function project(overrides = {}) {
   return {
@@ -65,4 +66,39 @@ test("dashboard counters separate new, processing, ready, and failed handoffs", 
     project({ id: "hidden", status: "ready", archivedAt: "2026-08-04T12:05:00.000Z" }),
   ]);
   assert.deepEqual(stats, { new: 1, processing: 1, ready: 1, failed: 1 });
+});
+
+test("parses the production Incoming Projects API shape with failed projects", () => {
+  const productionShape = {
+    projects: ["one", "two", "three"].map((id) => ({
+      id,
+      batchId: id,
+      title: `Failed handoff ${id}`,
+      creatorName: "Kai Cenat",
+      sourceUrl: "https://www.youtube.com/watch?v=abc123XYZ90",
+      thumbnailUrl: "https://i.ytimg.com/vi/abc123XYZ90/hqdefault.jpg",
+      opportunityScore: 54,
+      confidence: 89,
+      recommendedAction: "Review the source.",
+      receivedAt: "2026-08-04T12:00:00.000Z",
+      status: "failed",
+      stage: "Klipdose source import failed",
+      progress: 3,
+      sourceBadge: "KLIPDOSE",
+      archivedAt: null,
+      sourceContentId: "abc123XYZ90",
+      idempotencyKey: `klipdose-${id}`,
+    })),
+    stats: { new: 0, processing: 0, ready: 0, failed: 3 },
+  };
+  const parsed = parseIncomingKlipdoseResponse(productionShape);
+  assert.equal(parsed.stats.failed, 3);
+  assert.equal(parsed.projects.length, 3);
+  assert.equal(parsed.projects.every((item) => item.status === "failed"), true);
+  assert.equal(parsed.projects.every((item) => item.sourceBadge === "KLIPDOSE"), true);
+});
+
+test("rejects incorrect Incoming Projects nesting instead of silently zeroing", () => {
+  assert.throws(() => parseIncomingKlipdoseResponse({ incoming: [], stats: { failed: 3 } }), /projects array/);
+  assert.throws(() => parseIncomingKlipdoseResponse({ projects: [] }), /stats/);
 });

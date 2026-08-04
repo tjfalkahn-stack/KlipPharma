@@ -2207,12 +2207,27 @@ async function loadDashboardData(options = {}) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Could not load your dashboard.");
     renderDashboard(data);
+    await loadIncomingKlipdoseData();
     if (options.focusIncoming) $("#incomingPanel").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
     $("#dashboardError").textContent = error.message;
     $("#dashboardError").classList.remove("hidden");
     if (!options.quiet) $("#incomingList").innerHTML = `<div class="dashboard-empty">${error.message || "Could not load incoming projects."}</div>`;
   }
+}
+
+async function loadIncomingKlipdoseData() {
+  const response = await fetch("/api/incoming/klipdose", { cache: "no-store" });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(data?.error || "Could not load incoming Klipdose projects.");
+  if (!data || !Array.isArray(data.projects)) throw new Error("Incoming Projects response missing projects array.");
+  if (!data.stats || typeof data.stats !== "object") throw new Error("Incoming Projects response missing stats.");
+  renderIncomingKlipdose(data.projects, {
+    new: Number(data.stats.new ?? 0),
+    processing: Number(data.stats.processing ?? 0),
+    ready: Number(data.stats.ready ?? 0),
+    failed: Number(data.stats.failed ?? 0),
+  });
 }
 
 function renderDashboard(data) {
@@ -2234,7 +2249,6 @@ function renderDashboard(data) {
   $("#dashboardUploads").textContent = stats.uploads || 0;
   $("#dashboardClips").textContent = stats.clips || 0;
   $("#dashboardCompleted").textContent = stats.completed || 0;
-  renderIncomingKlipdose(data.incomingKlipdose || [], stats.klipdose || {});
   const tier = String(subscription.planTier || user.planTier || "free").toLowerCase();
   $("#dashboardUpgrade").classList.toggle("hidden", tier === "business");
   $("#dashboardUpgradeTitle").textContent = new Set(["pro", "studio"]).has(tier)

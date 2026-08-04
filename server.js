@@ -26,6 +26,7 @@ import {
   getWorkspaceContext,
   initializeDatabase,
   listWorkspaceInvitations,
+  listKlipdoseDatabaseProjectDebug,
   loadDatabaseProjects,
   recordBillingAgreement,
   removeWorkspaceMember,
@@ -219,7 +220,7 @@ function existingKlipdoseProject(idempotencyKey) {
   return [...jobs.values()].find((job) => job.integrationSource === "klipdose" && job.idempotencyKey === idempotencyKey);
 }
 
-function createKlipdoseProject(input) {
+async function createKlipdoseProject(input) {
   const ownerId = process.env.KLIPDOSE_PROJECT_OWNER_ID || (authMode === "off" ? "local-owner" : "");
   if (!ownerId) throw new Error("KLIPDOSE_PROJECT_OWNER_ID is required before production Klipdose handoffs can create visible projects.");
   const source = normalizeYouTubeSource(input.sourceUrl);
@@ -280,7 +281,7 @@ function createKlipdoseProject(input) {
     createdAt: new Date().toISOString(),
   };
   jobs.set(id, job);
-  persistJob(job);
+  await persistJob(job, { requireDatabase: authMode === "required" });
   importYouTubeSource(job, source.canonicalUrl)
     .catch((error) => {
       console.error("Klipdose YouTube project import failed:", { projectId: job.id, message: error.message });
@@ -298,13 +299,20 @@ function createKlipdoseProject(input) {
   return job;
 }
 
-app.post("/api/integrations/klipdose/projects", requireKlipdoseIntegration, (req, res) => {
+app.post("/api/integrations/klipdose/projects", requireKlipdoseIntegration, async (req, res) => {
   const parsed = klipdoseProjectSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid Klipdose project payload.", issues: parsed.error.issues.map((issue) => ({ path: issue.path, message: issue.message })) });
   try {
     const duplicate = existingKlipdoseProject(parsed.data.idempotencyKey);
-    const project = duplicate ?? createKlipdoseProject(parsed.data);
-    console.log("Klipdose handoff accepted", { projectId: project.id, duplicate: Boolean(duplicate), sourceContentId: parsed.data.sourceContentId });
+    const project = duplicate ?? await createKlipdoseProject(parsed.data);
+    if (duplicate) await persistJob(project, { requireDatabase: authMode === "required" });
+    console.log("Klipdose handoff accepted", {
+      projectId: project.id,
+      duplicate: Boolean(duplicate),
+      sourceContentId: parsed.data.sourceContentId,
+      ownerId: project.userId,
+      databasePersistenceRequired: authMode === "required",
+    });
     return res.status(duplicate ? 200 : 202).json({
       success: true,
       projectId: project.id,
@@ -312,7 +320,8 @@ app.post("/api/integrations/klipdose/projects", requireKlipdoseIntegration, (req
       idempotencyKey: parsed.data.idempotencyKey,
     });
   } catch (error) {
-    return res.status(400).json({ error: error.message || "Klipdose project could not be created." });
+    console.error("Klipdose handoff rejected before persistence:", { message: error.message });
+    return res.status(500).json({ error: error.message || "Klipdose project could not be created." });
   }
 });
 
@@ -548,6 +557,12 @@ app.get("/api/account/dashboard", requireUser, async (req, res) => {
     }));
   const incomingKlipdose = visibleKlipdoseProjects([...jobs.values()], (job) => canAccessJob(req, job))
     .map(klipdoseProjectForClient);
+  console.log("Klipdose incoming dashboard query", {
+    userId: req.user.id,
+    configuredOwnerId: process.env.KLIPDOSE_PROJECT_OWNER_ID || null,
+    returned: incomingKlipdose.length,
+    totalKlipdoseProjects: [...jobs.values()].filter(isKlipdoseProject).length,
+  });
   res.json({
     user: userForClient(profileUser),
     subscription: subscriptionForClient(billingUser),
@@ -574,7 +589,46 @@ app.get("/api/incoming/klipdose", requireUser, (req, res) => {
   const includeArchived = req.query.archived === "true";
   const projects = visibleKlipdoseProjects([...jobs.values()], (job) => canAccessJob(req, job), { includeArchived })
     .map(klipdoseProjectForClient);
+  console.log("Klipdose incoming API query", {
+    userId: req.user.id,
+    includeArchived,
+    returned: projects.length,
+    totalKlipdoseProjects: [...jobs.values()].filter(isKlipdoseProject).length,
+  });
   res.json({ projects, stats: klipdoseIncomingStats([...jobs.values()].filter((job) => canAccessJob(req, job))) });
+});
+
+app.get("/api/debug/klipdose-incoming", requireUser, async (req, res) => {
+  const configuredOwnerId = process.env.KLIPDOSE_PROJECT_OWNER_ID || null;
+  const mayInspectAll = req.user.id === configuredOwnerId || req.user.id === "local-owner";
+  const klipdoseJobs = [...jobs.values()].filter(isKlipdoseProject);
+  const visibleActive = visibleKlipdoseProjects(klipdoseJobs, (job) => canAccessJob(req, job));
+  const database = await listKlipdoseDatabaseProjectDebug().catch((error) => ({ configured: true, error: error.message, projects: [] }));
+  const inspectableJobs = mayInspectAll ? klipdoseJobs : klipdoseJobs.filter((job) => canAccessJob(req, job));
+  res.json({
+    requestUserId: req.user.id,
+    configuredOwnerId,
+    team: req.team ? { id: req.team.id, ownerUserId: req.team.ownerUserId, businessActive: req.team.businessActive, memberIds: req.team.memberIds } : null,
+    counts: {
+      totalKlipdoseJobs: klipdoseJobs.length,
+      visibleActive: visibleActive.length,
+      archived: klipdoseJobs.filter(isArchivedKlipdoseProject).length,
+      databaseKlipdoseProjects: database.projects.length,
+    },
+    database,
+    incomingQueryResult: visibleActive.map(klipdoseProjectForClient),
+    inspectedJobs: inspectableJobs.map((job) => ({
+      id: job.id,
+      userId: mayInspectAll ? job.userId : undefined,
+      status: job.status,
+      integrationSource: job.integrationSource,
+      sourceBadge: klipdoseProjectForClient(job).sourceBadge,
+      archived: isArchivedKlipdoseProject(job),
+      canAccess: canAccessJob(req, job),
+      idempotencyKey: job.idempotencyKey,
+      createdAt: job.createdAt,
+    })),
+  });
 });
 
 app.post("/api/incoming/klipdose/:id/start", requireUser, requireWorkspaceEditor, (req, res) => {
@@ -2936,7 +2990,7 @@ function montageStyleLabel(style) {
   return { fast: "Fast & Punchy", story: "Smooth Story", music: "Music Energy", promo: "Clean Promo" }[style] || "Fast & Punchy";
 }
 
-function persistJob(job) {
+function persistJob(job, options = {}) {
   try {
     const destination = path.join(projectsDir, `${job.id}.json`);
     const temporary = `${destination}.tmp`;
@@ -2945,8 +2999,9 @@ function persistJob(job) {
   } catch (error) {
     console.error(`Could not persist project ${job.id}:`, error.message);
   }
-  saveDatabaseProject(job).catch((error) => {
+  return saveDatabaseProject(job).catch((error) => {
     console.error(`Could not save project ${job.id} to PostgreSQL:`, error.message);
+    if (options.requireDatabase) throw error;
   });
 }
 

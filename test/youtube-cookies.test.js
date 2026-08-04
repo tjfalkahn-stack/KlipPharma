@@ -66,3 +66,10 @@ test("non-auth YouTube failures remain regular import failures", () => {
   assert.equal(patch.stage, "YouTube import failed");
   assert.equal(patch.error, null);
 });
+
+test("YouTube blocked downloads keep the project as source_auth_required instead of losing metadata", () => {
+  const error = new Error("ERROR: [youtube] Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for authentication.");
+  const patch = youtubeImportFailurePatch(error, "Klipdose source import failed");
+  assert.equal(patch.status, "source_auth_required");
+  assert.match(patch.error, /YouTube requires authenticated access/);
+});

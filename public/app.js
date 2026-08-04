@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const ASSET_VERSION = "0.29.3";
+const ASSET_VERSION = "0.29.4";
 window.__KLIPPHARMA_ASSET_VERSION__ = ASSET_VERSION;
 console.info("[KlipPharma dashboard] asset loaded", { version: ASSET_VERSION, path: window.location.pathname });
 
@@ -2346,7 +2346,7 @@ function renderIncomingKlipdose(projects, stats) {
     body.className = "incoming-body";
     const meta = document.createElement("div");
     meta.className = "incoming-meta";
-    ["KLIPDOSE", String(project.status || "queued").toUpperCase()].forEach((label) => {
+    [project.platformBadge || "EXTERNAL", "KLIPDOSE", String(project.status || "new").toUpperCase()].forEach((label) => {
       const badge = document.createElement("span");
       badge.textContent = label;
       meta.append(badge);
@@ -2360,7 +2360,9 @@ function renderIncomingKlipdose(projects, stats) {
     details.textContent = `${received} · Opportunity ${project.opportunityScore ?? "N/A"} · Confidence ${project.confidence ?? "N/A"}%`;
     const action = document.createElement("p");
     action.textContent = project.recommendedAction || "Review source";
-    body.append(meta, title, creator, details, action);
+    const state = document.createElement("small");
+    state.textContent = `Source state: ${project.sourceState || project.stage || project.status || "new"}`;
+    body.append(meta, title, creator, details, state, action);
     if (project.error || project.status === "source_auth_required") {
       const error = document.createElement("p");
       error.className = "incoming-error";
@@ -2370,18 +2372,20 @@ function renderIncomingKlipdose(projects, stats) {
     const controls = document.createElement("div");
     controls.className = "incoming-actions";
     const open = actionButton("OPEN IN EDITOR", () => openIncomingProject(project, open));
-    const canRetry = project.status === "failed" || project.status === "source_auth_required";
+    open.disabled = !(project.canOpenEditor || project.sourceReady || project.status === "ready");
+    const canRetry = project.canRetryImport || project.status === "failed" || project.status === "source_auth_required" || project.status === "awaiting_vod" || project.status === "source_unavailable";
     const start = actionButton(canRetry ? "RETRY IMPORT" : "START PROCESSING", () => startIncomingProject(project, start));
-    start.disabled = project.status === "processing" || project.status === "queued" || project.status === "ready";
+    start.disabled = project.status === "processing" || project.status === "queued" || project.status === "ready" || project.status === "importing" || project.status === "link_only" || !canRetry && project.status !== "new";
     const review = document.createElement("a");
     review.className = "incoming-link";
     review.href = project.sourceUrl || "#";
     review.target = "_blank";
     review.rel = "noreferrer";
-    review.textContent = "REVIEW SOURCE";
+    review.textContent = "OPEN SOURCE";
     if (!project.sourceUrl) review.setAttribute("aria-disabled", "true");
+    const upload = actionButton("UPLOAD AUTHORIZED SOURCE", () => uploadIncomingSource(project, upload));
     const archive = actionButton("ARCHIVE", () => archiveIncomingProject(project, archive));
-    controls.append(open, start, review, archive);
+    controls.append(open, review, start, upload, archive);
     card.append(thumb, body, controls);
     root.append(card);
   });
@@ -2432,6 +2436,32 @@ async function startIncomingProject(project, button) {
     button.textContent = project.status === "failed" || project.status === "source_auth_required" ? "RETRY IMPORT" : "START PROCESSING";
     toast(error.message || "Could not start processing.");
   }
+}
+
+async function uploadIncomingSource(project, button) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "video/mp4,video/quicktime,.mp4,.mov,.m4v";
+  input.addEventListener("change", async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    button.disabled = true;
+    button.textContent = "UPLOADING…";
+    try {
+      const formData = new FormData();
+      formData.append("source", file);
+      const response = await fetch(`/api/incoming/klipdose/${project.id}/source`, { method: "POST", body: formData });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not attach this source.");
+      toast("Authorized source attached. KlipPharma is processing it now.");
+      await loadDashboardData({ quiet: true });
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "UPLOAD AUTHORIZED SOURCE";
+      toast(error.message || "Could not attach this source.");
+    }
+  }, { once: true });
+  input.click();
 }
 
 async function archiveIncomingProject(project, button) {

@@ -39,6 +39,7 @@ import {
   validateCredentials,
 } from "./lib/database.js";
 import { isArchivedKlipdoseProject, isKlipdoseProject, klipdoseIncomingStats, klipdoseProjectForClient, visibleKlipdoseProjects } from "./lib/incoming-klipdose.js";
+import { applyAuthorizedSourceAttachment, authorizedSourceAttachmentPatch } from "./lib/klipdose-attachment.js";
 import { klipdoseOwnerConfigForRequest } from "./lib/klipdose-owner-config.js";
 import {
   assertOwnedKey,
@@ -49,6 +50,14 @@ import {
   verifyObject,
 } from "./lib/object-storage.js";
 import { normalizeYouTubeSource, sanitizeYouTubeTitle } from "./lib/youtube.js";
+import {
+  assertSafePublicUrl,
+  classifyKickImportError,
+  detectSourcePlatform,
+  extractM3u8Url,
+  isRetryableSourceStatus,
+  platformBadgeForSource,
+} from "./lib/source-platform.js";
 import {
   YOUTUBE_AUTH_REQUIRED_MESSAGE,
   createYouTubeCookiesOption,
@@ -233,7 +242,8 @@ function existingKlipdoseProject(idempotencyKey) {
 async function createKlipdoseProject(input) {
   const ownerId = process.env.KLIPDOSE_PROJECT_OWNER_ID || (authMode === "off" ? "local-owner" : "");
   if (!ownerId) throw new Error("KLIPDOSE_PROJECT_OWNER_ID is required before production Klipdose handoffs can create visible projects.");
-  const source = normalizeYouTubeSource(input.sourceUrl);
+  const source = detectSourcePlatform(input.sourceUrl);
+  const youtubeSource = source.sourceType === "youtube" ? normalizeYouTubeSource(source.canonicalUrl) : null;
   const id = crypto.randomUUID();
   const job = {
     id,
@@ -242,18 +252,20 @@ async function createKlipdoseProject(input) {
     batchId: id,
     batchPosition: 1,
     batchSize: 1,
-    status: "processing",
+    status: "importing",
     progress: 3,
     phase: "import",
-    stage: "Accepted from Klipdose · connecting to YouTube source",
+    stage: `Accepted from Klipdose · connecting to ${platformBadgeForSource(source.sourcePlatform)} source`,
     originalName: sanitizeYouTubeTitle(input.title),
     creatorName: input.creatorName,
     thumbnailUrl: input.thumbnailUrl || null,
     filePath: null,
     objectKey: null,
     mimeType: "video/mp4",
-    sourceProvider: "youtube",
-    sourceVideoId: source.videoId,
+    sourceProvider: source.sourcePlatform,
+    sourcePlatform: source.sourcePlatform,
+    sourceType: source.sourceType,
+    sourceVideoId: youtubeSource?.videoId || source.kickVideoId || null,
     sourceUrl: source.canonicalUrl,
     sourceReady: false,
     integrationSource: "klipdose",
@@ -292,11 +304,11 @@ async function createKlipdoseProject(input) {
   };
   jobs.set(id, job);
   await persistJob(job, { requireDatabase: authMode === "required" });
-  importYouTubeSource(job, source.canonicalUrl)
+  importProjectSource(job)
     .catch((error) => {
-      console.error("Klipdose YouTube project import failed:", safeYouTubeImportLog(job, error));
+      console.error("Klipdose source import failed:", safeSourceImportLog(job, error));
       removeYouTubeWorkingFiles(job.id);
-      applyYouTubeImportFailure(job, error, "Klipdose source import failed");
+      applySourceImportFailure(job, error, "Klipdose source import failed");
       persistJob(job);
     });
   return job;
@@ -639,10 +651,13 @@ app.post("/api/incoming/klipdose/:id/start", requireUser, requireWorkspaceEditor
   if (!job || !isKlipdoseProject(job)) return res.status(404).json({ error: "Incoming Klipdose project not found." });
   if (isArchivedKlipdoseProject(job)) return res.status(409).json({ error: "Restore this incoming project before processing it." });
   if (job.status === "ready") return res.json({ project: klipdoseProjectForClient(job), alreadyReady: true });
-  if (job.status === "processing" || job.status === "queued") return res.json({ project: klipdoseProjectForClient(job), alreadyProcessing: true });
+  if (job.status === "processing" || job.status === "queued" || job.status === "importing") return res.json({ project: klipdoseProjectForClient(job), alreadyProcessing: true });
   if (!job.sourceUrl) return res.status(400).json({ error: "This Klipdose project is missing its source URL." });
+  if (!isRetryableSourceStatus(job.status) && job.status === "link_only") {
+    return res.status(409).json({ error: "This source is link-only. Upload an authorized MP4 or MOV to process it." });
+  }
   Object.assign(job, {
-    status: "processing",
+    status: "importing",
     progress: 3,
     phase: "import",
     stage: "Restarting Klipdose source import",
@@ -651,13 +666,34 @@ app.post("/api/incoming/klipdose/:id/start", requireUser, requireWorkspaceEditor
     dismissedAt: null,
   });
   persistJob(job);
-  importYouTubeSource(job, job.sourceUrl)
+  importProjectSource(job)
     .catch((error) => {
-      console.error("Klipdose incoming import failed:", safeYouTubeImportLog(job, error));
+      console.error("Klipdose incoming import failed:", safeSourceImportLog(job, error));
       removeYouTubeWorkingFiles(job.id);
-      applyYouTubeImportFailure(job, error, "Klipdose source import failed");
+      applySourceImportFailure(job, error, "Klipdose source import failed");
       persistJob(job);
     });
+  res.status(202).json({ project: klipdoseProjectForClient(job) });
+});
+
+app.post("/api/incoming/klipdose/:id/source", requireUser, requireWorkspaceEditor, upload.single("source"), (req, res) => {
+  const job = ownedJob(req, req.params.id);
+  if (!job || !isKlipdoseProject(job)) {
+    removeLocalFile(req.file?.path, uploadDir);
+    return res.status(404).json({ error: "Incoming Klipdose project not found." });
+  }
+  if (!req.file) return res.status(400).json({ error: "Upload an authorized MP4 or MOV source." });
+  const extension = path.extname(req.file.originalname).toLowerCase();
+  if (!new Set([".mp4", ".mov", ".m4v"]).has(extension)) {
+    removeLocalFile(req.file.path, uploadDir);
+    return res.status(400).json({ error: "Upload an MP4 or MOV source file." });
+  }
+  removeYouTubeWorkingFiles(job.id);
+  const destination = path.join(uploadDir, `${job.id}${extension}`);
+  fs.renameSync(req.file.path, destination);
+  applyAuthorizedSourceAttachment(job, authorizedSourceAttachmentPatch({ filePath: destination, mimeType: mimeTypeFor(destination) }));
+  persistJob(job);
+  enqueueProject(job);
   res.status(202).json({ project: klipdoseProjectForClient(job) });
 });
 
@@ -1473,6 +1509,232 @@ async function importYouTubeSource(job, canonicalUrl) {
   enqueueProject(job);
 }
 
+async function importProjectSource(job) {
+  ensureSourceClassification(job);
+  if (job.sourceType === "external_link") {
+    Object.assign(job, {
+      status: "link_only",
+      phase: "link_only",
+      stage: "External source link saved",
+      error: null,
+      progress: 3,
+      sourceReady: false,
+    });
+    persistJob(job);
+    return;
+  }
+  if (job.sourceType === "youtube") return importYouTubeSource(job, normalizeYouTubeSource(job.sourceUrl).canonicalUrl);
+  if (job.sourceType === "kick_live") {
+    const error = new Error("Kick stream is currently live and no completed VOD exists yet.");
+    error.code = "KICK_AWAITING_VOD";
+    throw error;
+  }
+  if (job.sourceType === "kick_vod") return importKickVodSource(job);
+  if (job.sourceType === "direct_media") return importDirectMediaSource(job);
+  Object.assign(job, {
+    status: "link_only",
+    phase: "link_only",
+    stage: "Source link saved",
+    error: null,
+    progress: 3,
+    sourceReady: false,
+  });
+  persistJob(job);
+}
+
+function ensureSourceClassification(job) {
+  if (!job?.sourceUrl || (job.sourcePlatform && job.sourceType)) return job;
+  const detected = detectSourcePlatform(job.sourceUrl);
+  job.sourcePlatform = detected.sourcePlatform;
+  job.sourceType = detected.sourceType;
+  job.sourceProvider = detected.sourcePlatform;
+  job.sourceVideoId = job.sourceVideoId || detected.kickVideoId || null;
+  return job;
+}
+
+async function importKickVodSource(job) {
+  job.stage = "Resolving Kick VOD playback";
+  job.progress = 8;
+  persistJob(job);
+  const manifestUrl = await resolveKickManifestUrl(job.sourceUrl);
+  if (!manifestUrl) {
+    const error = new Error("Kick VOD playback manifest is unavailable or expired.");
+    error.code = "SOURCE_UNAVAILABLE";
+    throw error;
+  }
+  return importM3u8Source(job, manifestUrl, "Kick VOD");
+}
+
+async function importDirectMediaSource(job) {
+  const url = await assertSafePublicUrl(job.sourceUrl);
+  const contentType = await safeHeadContentType(url.toString());
+  const pathname = url.pathname.toLowerCase();
+  const isM3u8 = pathname.endsWith(".m3u8") || /mpegurl|m3u8/i.test(contentType);
+  const isDirectVideo = /\.(mp4|mov)$/i.test(pathname) || /video\/(mp4|quicktime)|application\/octet-stream/i.test(contentType);
+  if (!isM3u8 && !isDirectVideo) throw new Error("That direct URL does not look like an MP4, MOV, or M3U8 media source.");
+  return isM3u8
+    ? importM3u8Source(job, url.toString(), "Direct M3U8")
+    : importDirectVideoUrl(job, url.toString(), "Direct media");
+}
+
+async function importM3u8Source(job, manifestUrl, label) {
+  await assertSafePublicUrl(manifestUrl);
+  const outputPath = path.join(uploadDir, `${job.id}.mp4`);
+  const args = [
+    "-y",
+    "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
+    "-rw_timeout", "20000000",
+    "-i", manifestUrl,
+    "-t", "14400",
+    "-c", "copy",
+    "-bsf:a", "aac_adtstoasc",
+    "-movflags", "+faststart",
+    outputPath,
+  ];
+  await runImportWithRetries(() => runFfmpegImport(args, job, `Downloading ${label}`), job, label);
+  completeImportedSource(job, outputPath, `${label} ready · waiting for the klip processor`);
+}
+
+async function importDirectVideoUrl(job, mediaUrl, label) {
+  await assertSafePublicUrl(mediaUrl);
+  const outputPath = path.join(uploadDir, `${job.id}.mp4`);
+  const args = [
+    "-y",
+    "-rw_timeout", "20000000",
+    "-i", mediaUrl,
+    "-t", "14400",
+    "-map", "0:v:0?",
+    "-map", "0:a:0?",
+    "-c:v", "copy",
+    "-c:a", "aac",
+    "-movflags", "+faststart",
+    outputPath,
+  ];
+  await runImportWithRetries(() => runFfmpegImport(args, job, `Downloading ${label}`), job, label);
+  completeImportedSource(job, outputPath, `${label} ready · waiting for the klip processor`);
+}
+
+function completeImportedSource(job, filePath, stage) {
+  if (!fs.existsSync(filePath)) throw new Error("The source import completed without producing a video file.");
+  const size = fs.statSync(filePath).size;
+  if (!size || size > 1024 * 1024 * 1024) throw new Error("The imported video must be smaller than 1 GB.");
+  job.filePath = filePath;
+  job.mimeType = mimeTypeFor(filePath);
+  job.originalName = job.originalName || path.basename(filePath);
+  job.sourceReady = true;
+  Object.assign(job, { status: "queued", progress: 48, phase: "queued", stage, error: null });
+  persistJob(job);
+  enqueueProject(job);
+}
+
+function runFfmpegImport(args, job, label) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(ffmpegPath || "ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    let saved = false;
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      const error = new Error(`${label} timed out.`);
+      error.code = "SOURCE_UNAVAILABLE";
+      reject(error);
+    }, 10 * 60 * 1000);
+    child.stderr.on("data", (chunk) => {
+      stderr = (stderr + String(chunk)).slice(-12000);
+      if (saved) return;
+      saved = true;
+      job.status = "importing";
+      job.phase = "import";
+      job.stage = label;
+      job.progress = Math.max(10, Number(job.progress || 10));
+      persistJob(job);
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) return resolve();
+      const error = new Error(`ffmpeg exited ${code}: ${stderr}`);
+      if (/404|403|not found|expired|invalid data|server returned/i.test(stderr)) error.code = "SOURCE_UNAVAILABLE";
+      reject(error);
+    });
+  });
+}
+
+async function runImportWithRetries(task, job, label, attempts = 2) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      if (attempt > 1) {
+        job.stage = `Retrying ${label} import · attempt ${attempt}`;
+        job.progress = Math.max(10, Number(job.progress || 10));
+        persistJob(job);
+        await new Promise((resolve) => setTimeout(resolve, 750 * attempt));
+      }
+      return await task();
+    } catch (error) {
+      lastError = error;
+      if (error?.code === "SOURCE_UNAVAILABLE") break;
+    }
+  }
+  throw lastError;
+}
+
+async function resolveKickManifestUrl(sourceUrl) {
+  await assertSafePublicUrl(sourceUrl);
+  const detected = detectSourcePlatform(sourceUrl);
+  const candidates = [
+    detected.kickVideoId ? `https://kick.com/api/v1/video/${encodeURIComponent(detected.kickVideoId)}` : null,
+    detected.kickVideoId ? `https://kick.com/api/v2/video/${encodeURIComponent(detected.kickVideoId)}` : null,
+    sourceUrl,
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      const response = await safeFetch(candidate, { headers: { Accept: "application/json,text/html,*/*" } });
+      const text = await response.text();
+      const manifest = extractM3u8Url(text);
+      if (manifest) return manifest;
+    } catch {
+      // Try the next public Kick shape.
+    }
+  }
+  return null;
+}
+
+async function safeHeadContentType(sourceUrl) {
+  const response = await safeFetch(sourceUrl, { method: "HEAD" });
+  const type = response.headers.get("content-type") || "";
+  const length = Number(response.headers.get("content-length") || 0);
+  if (length > 1024 * 1024 * 1024) throw new Error("The source file must be smaller than 1 GB.");
+  return type;
+}
+
+async function safeFetch(sourceUrl, options = {}, redirects = 0) {
+  await assertSafePublicUrl(sourceUrl);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const response = await fetch(sourceUrl, { ...options, redirect: "manual", signal: controller.signal });
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      if (redirects >= 3) throw new Error("Too many source redirects.");
+      const location = response.headers.get("location");
+      if (!location) throw new Error("Source redirect was missing a location.");
+      const redirected = new URL(location, sourceUrl).toString();
+      await assertSafePublicUrl(redirected);
+      return safeFetch(redirected, options, redirects + 1);
+    }
+    if (!response.ok) {
+      const error = new Error(`Source request failed with HTTP ${response.status}.`);
+      if (response.status === 404 || response.status === 410 || response.status === 403) error.code = "SOURCE_UNAVAILABLE";
+      throw error;
+    }
+    return response;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function runYouTubeDownload(command, args, job) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -1545,6 +1807,44 @@ function applyYouTubeImportFailure(job, error, fallbackStage) {
   });
 }
 
+function applySourceImportFailure(job, error, fallbackStage) {
+  const kickPatch = job.sourcePlatform === "kick" ? classifyKickImportError(error) : null;
+  const rawYouTubePatch = job.sourceType === "youtube" ? youtubeImportFailurePatch(error, fallbackStage) : null;
+  const youtubePatch = rawYouTubePatch?.status === "source_auth_required"
+    ? rawYouTubePatch
+    : rawYouTubePatch
+      ? {
+          status: "link_only",
+          phase: "link_only",
+          stage: "YouTube source link saved",
+          error: "YouTube could not be imported directly. The source link is still saved; upload an authorized source file to process it.",
+        }
+      : null;
+  const unavailablePatch = error?.code === "SOURCE_UNAVAILABLE"
+    ? {
+        status: "source_unavailable",
+        phase: "source_unavailable",
+        stage: "Source media unavailable",
+        error: "The source media is unavailable or expired. The original source link is still saved.",
+      }
+    : null;
+  const patch = kickPatch || youtubePatch || unavailablePatch || {
+    status: job.sourceType === "youtube" ? "link_only" : "failed",
+    phase: job.sourceType === "youtube" ? "link_only" : "failed",
+    stage: job.sourceType === "youtube" ? "YouTube source link saved" : fallbackStage,
+    error: job.sourceType === "youtube"
+      ? "YouTube could not be imported directly. The source link is still saved; upload an authorized source file to process it."
+      : null,
+  };
+  Object.assign(job, {
+    ...patch,
+    progress: Math.min(95, Math.max(3, Number(job.progress || 3))),
+    error: patch.error || friendlyYouTubeError(error),
+    sourceReady: false,
+    failedAt: new Date().toISOString(),
+  });
+}
+
 function safeYouTubeImportLog(job, error) {
   const message = String(error?.userMessage || error?.message || "");
   return {
@@ -1555,6 +1855,15 @@ function safeYouTubeImportLog(job, error) {
       .replace(/--cookies\s+\S+/gi, "--cookies [redacted]")
       .replace(/--cookies-from-browser\s+\S+/gi, "--cookies-from-browser [redacted]")
       .slice(0, 500),
+  };
+}
+
+function safeSourceImportLog(job, error) {
+  const details = safeYouTubeImportLog(job, error);
+  return {
+    ...details,
+    sourcePlatform: job?.sourcePlatform || job?.sourceProvider || null,
+    sourceType: job?.sourceType || null,
   };
 }
 

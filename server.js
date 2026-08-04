@@ -49,6 +49,12 @@ import {
   verifyObject,
 } from "./lib/object-storage.js";
 import { normalizeYouTubeSource, sanitizeYouTubeTitle } from "./lib/youtube.js";
+import {
+  YOUTUBE_AUTH_REQUIRED_MESSAGE,
+  createYouTubeCookiesOption,
+  isYouTubeAuthRequiredError,
+  youtubeImportFailurePatch,
+} from "./lib/youtube-cookies.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const storageRoot = process.env.STORAGE_ROOT ? path.resolve(process.env.STORAGE_ROOT) : path.join(__dirname, "storage");
@@ -284,16 +290,9 @@ async function createKlipdoseProject(input) {
   await persistJob(job, { requireDatabase: authMode === "required" });
   importYouTubeSource(job, source.canonicalUrl)
     .catch((error) => {
-      console.error("Klipdose YouTube project import failed:", { projectId: job.id, message: error.message });
+      console.error("Klipdose YouTube project import failed:", safeYouTubeImportLog(job, error));
       removeYouTubeWorkingFiles(job.id);
-      Object.assign(job, {
-        status: "failed",
-        progress: Math.min(95, Math.max(3, Number(job.progress || 3))),
-        phase: "failed",
-        stage: "Klipdose source import failed",
-        error: friendlyYouTubeError(error),
-        failedAt: new Date().toISOString(),
-      });
+      applyYouTubeImportFailure(job, error, "Klipdose source import failed");
       persistJob(job);
     });
   return job;
@@ -650,16 +649,9 @@ app.post("/api/incoming/klipdose/:id/start", requireUser, requireWorkspaceEditor
   persistJob(job);
   importYouTubeSource(job, job.sourceUrl)
     .catch((error) => {
-      console.error("Klipdose incoming import failed:", { projectId: job.id, message: error.message });
+      console.error("Klipdose incoming import failed:", safeYouTubeImportLog(job, error));
       removeYouTubeWorkingFiles(job.id);
-      Object.assign(job, {
-        status: "failed",
-        progress: Math.min(95, Math.max(3, Number(job.progress || 3))),
-        phase: "failed",
-        stage: "Klipdose source import failed",
-        error: friendlyYouTubeError(error),
-        failedAt: new Date().toISOString(),
-      });
+      applyYouTubeImportFailure(job, error, "Klipdose source import failed");
       persistJob(job);
     });
   res.status(202).json({ project: klipdoseProjectForClient(job) });
@@ -911,16 +903,9 @@ app.post("/api/youtube/import", (req, res) => {
 
   importYouTubeSource(job, source.canonicalUrl)
     .catch((error) => {
-      console.error("YouTube import failed:", error);
+      console.error("YouTube import failed:", safeYouTubeImportLog(job, error));
       removeYouTubeWorkingFiles(job.id);
-      Object.assign(job, {
-        status: "failed",
-        progress: Math.min(95, Math.max(3, Number(job.progress || 3))),
-        phase: "failed",
-        stage: "YouTube import failed",
-        error: friendlyYouTubeError(error),
-        failedAt: new Date().toISOString(),
-      });
+      applyYouTubeImportFailure(job, error, "YouTube import failed");
       persistJob(job);
     });
 
@@ -1435,6 +1420,7 @@ app.post("/api/projects/:id/clips/:clipId/feedback", (req, res) => {
 
 async function importYouTubeSource(job, canonicalUrl) {
   const outputTemplate = path.join(uploadDir, `${job.id}.%(ext)s`);
+  const cookies = createYouTubeCookiesOption();
   const args = [
     "--no-playlist",
     "--no-warnings",
@@ -1448,9 +1434,21 @@ async function importYouTubeSource(job, canonicalUrl) {
     "--output", outputTemplate,
     "--print", "after_move:%(title)s",
     "--print", "after_move:%(filepath)s",
+    ...cookies.args,
     canonicalUrl,
   ];
-  const result = await runYouTubeDownloadWithFallback(args, job);
+  let result;
+  try {
+    result = await runYouTubeDownloadWithFallback(args, job);
+  } catch (error) {
+    if (isYouTubeAuthRequiredError(error)) {
+      error.code = "YOUTUBE_SOURCE_AUTH_REQUIRED";
+      error.userMessage = YOUTUBE_AUTH_REQUIRED_MESSAGE;
+    }
+    throw error;
+  } finally {
+    cookies.cleanup();
+  }
   const candidates = fs.readdirSync(uploadDir)
     .filter((name) => name.startsWith(`${job.id}.`) && !name.endsWith(".part") && !name.endsWith(".ytdl"))
     .map((name) => path.join(uploadDir, name))
@@ -1533,8 +1531,35 @@ function removeYouTubeWorkingFiles(jobId) {
   }
 }
 
+function applyYouTubeImportFailure(job, error, fallbackStage) {
+  const patch = youtubeImportFailurePatch(error, fallbackStage);
+  Object.assign(job, {
+    ...patch,
+    progress: Math.min(95, Math.max(3, Number(job.progress || 3))),
+    error: patch.error || friendlyYouTubeError(error),
+    failedAt: new Date().toISOString(),
+  });
+}
+
+function safeYouTubeImportLog(job, error) {
+  const message = String(error?.userMessage || error?.message || "");
+  return {
+    projectId: job?.id,
+    code: error?.code || "YOUTUBE_IMPORT_FAILED",
+    status: error?.code === "YOUTUBE_SOURCE_AUTH_REQUIRED" || isYouTubeAuthRequiredError(error) ? "source_auth_required" : "failed",
+    message: message
+      .replace(/--cookies\s+\S+/gi, "--cookies [redacted]")
+      .replace(/--cookies-from-browser\s+\S+/gi, "--cookies-from-browser [redacted]")
+      .slice(0, 500),
+  };
+}
+
 function friendlyYouTubeError(error) {
+  if (error?.userMessage) return error.userMessage;
   const message = String(error?.message || "");
+  if (error?.code === "YOUTUBE_SOURCE_AUTH_REQUIRED" || isYouTubeAuthRequiredError(error)) {
+    return YOUTUBE_AUTH_REQUIRED_MESSAGE;
+  }
   if (error?.code === "ENOENT" || error?.code === "YOUTUBE_IMPORTER_MISSING") {
     return "The YouTube importer is not installed on this server yet.";
   }

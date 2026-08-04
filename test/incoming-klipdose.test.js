@@ -63,9 +63,26 @@ test("dashboard counters separate new, processing, ready, and failed handoffs", 
     project({ id: "processing", status: "processing" }),
     project({ id: "ready", status: "ready" }),
     project({ id: "failed", status: "failed" }),
+    project({ id: "auth-required", status: "source_auth_required" }),
     project({ id: "hidden", status: "ready", archivedAt: "2026-08-04T12:05:00.000Z" }),
   ]);
-  assert.deepEqual(stats, { new: 1, processing: 1, ready: 1, failed: 1 });
+  assert.deepEqual(stats, { new: 1, processing: 1, ready: 1, failed: 2 });
+});
+
+test("source auth required projects remain visible with user-facing error", () => {
+  const incoming = [
+    project({
+      id: "auth-required",
+      status: "source_auth_required",
+      phase: "source_auth_required",
+      stage: "YouTube source requires authenticated access",
+      error: "YouTube requires authenticated access for this source. Add a valid cookies file or open the source manually.",
+    }),
+  ];
+  const visible = visibleKlipdoseProjects(incoming, () => true).map(klipdoseProjectForClient);
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].status, "source_auth_required");
+  assert.match(visible[0].error, /YouTube requires authenticated access/);
 });
 
 test("parses the production Incoming Projects API shape with failed projects", () => {

@@ -515,6 +515,7 @@ blockquote { margin:0 0 9px; font-size:15px; color:#c1c9be; border-left:3px soli
 .incoming-meta span { padding:4px 6px; border:1px solid #455735; border-radius:999px; color:var(--green); background:#11170e; font-size:7px; font-weight:900; letter-spacing:.1em; }
 .incoming-body h4 { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin:0 0 4px; font:800 13px Manrope,sans-serif; }
 .incoming-body p { margin:0 0 4px; color:#a9b3a6; font-size:10px; line-height:1.45; }
+.incoming-body .incoming-error { margin-top:6px; padding:7px 8px; border:1px solid #624332; border-radius:8px; color:#ffc8a6; background:#21130e; }
 .incoming-body small { display:block; margin-bottom:5px; color:#7f8a7c; font-size:8px; }
 .incoming-actions { display:grid; grid-template-columns:1fr; gap:6px; min-width:128px; }
 .incoming-actions button,.incoming-link { display:block; padding:7px 9px; border:1px solid #3a4934; border-radius:7px; color:#11170e; background:var(--green); text-align:center; font-size:8px; font-weight:900; text-decoration:none; }

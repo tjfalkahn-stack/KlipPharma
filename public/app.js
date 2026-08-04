@@ -375,7 +375,7 @@ async function pollProjects() {
       return project;
     }));
     renderBatchStatus(projects);
-    const sourcesFinished = projects.every((project) => project.status === "ready" || project.status === "failed");
+    const sourcesFinished = projects.every((project) => project.status === "ready" || project.status === "failed" || project.status === "source_auth_required");
     const montage = projects.find((project) => project.montage)?.montage;
     const montageFinished = !montage || montage.status === "ready" || montage.status === "failed";
     const finished = sourcesFinished && montageFinished;
@@ -404,9 +404,9 @@ async function pollProjects() {
 }
 
 function renderBatchStatus(projects) {
-  const failed = projects.filter((project) => project.status === "failed").length;
+  const failed = projects.filter((project) => project.status === "failed" || project.status === "source_auth_required").length;
   const progressValues = projects.map((project) => (
-    project.status === "failed" ? Math.min(95, Number(project.progress || 0)) : Number(project.progress || 0)
+    project.status === "failed" || project.status === "source_auth_required" ? Math.min(95, Number(project.progress || 0)) : Number(project.progress || 0)
   ));
   const average = Math.round(progressValues.reduce((sum, progress) => sum + progress, 0) / projects.length);
   const ready = projects.filter((project) => project.status === "ready").length;
@@ -436,7 +436,7 @@ function renderBatchStatus(projects) {
   statusBox.innerHTML = "";
   projects.forEach((project) => {
     const row = document.createElement("div");
-    row.className = `batch-row ${project.status}`;
+    row.className = `batch-row ${project.status === "source_auth_required" ? "failed" : project.status}`;
     const main = document.createElement("span");
     main.className = "batch-row-main";
     const name = document.createElement("b");
@@ -444,7 +444,7 @@ function renderBatchStatus(projects) {
     name.textContent = project.originalName;
     const stage = document.createElement("small");
     stage.className = "batch-row-stage";
-    stage.textContent = project.status === "failed"
+    stage.textContent = project.status === "failed" || project.status === "source_auth_required"
       ? project.stage || "Processing stopped"
       : project.status === "queued" && project.queuePosition
         ? `${project.stage || "Queued"} · position ${project.queuePosition}`
@@ -454,18 +454,18 @@ function renderBatchStatus(projects) {
     detail.className = "batch-row-status";
     detail.textContent = project.status === "ready"
       ? `${project.clips?.length || 0} klips ready`
-      : project.status === "failed"
-        ? `Stopped at ${Math.min(95, Number(project.progress || 0))}%`
+      : project.status === "failed" || project.status === "source_auth_required"
+        ? project.status === "source_auth_required" ? "Auth required" : `Stopped at ${Math.min(95, Number(project.progress || 0))}%`
         : project.status === "queued"
           ? "Queued"
           : `${project.progress || 0}%`;
     const progress = document.createElement("span");
     progress.className = "batch-row-progress";
     const progressFill = document.createElement("i");
-    progressFill.style.width = `${project.status === "failed" ? Math.min(95, Number(project.progress || 0)) : Number(project.progress || 0)}%`;
+    progressFill.style.width = `${project.status === "failed" || project.status === "source_auth_required" ? Math.min(95, Number(project.progress || 0)) : Number(project.progress || 0)}%`;
     progress.append(progressFill);
     row.append(main, detail, progress);
-    if (project.status === "failed" && project.error) {
+    if ((project.status === "failed" || project.status === "source_auth_required") && project.error) {
       const error = document.createElement("p");
       error.className = "batch-row-error";
       error.textContent = project.error;
@@ -2328,10 +2328,17 @@ function renderIncomingKlipdose(projects, stats) {
     const action = document.createElement("p");
     action.textContent = project.recommendedAction || "Review source";
     body.append(meta, title, creator, details, action);
+    if (project.error || project.status === "source_auth_required") {
+      const error = document.createElement("p");
+      error.className = "incoming-error";
+      error.textContent = project.error || "YouTube requires authenticated access for this source.";
+      body.append(error);
+    }
     const controls = document.createElement("div");
     controls.className = "incoming-actions";
     const open = actionButton("OPEN IN EDITOR", () => openIncomingProject(project, open));
-    const start = actionButton(project.status === "failed" ? "RETRY PROCESSING" : "START PROCESSING", () => startIncomingProject(project, start));
+    const canRetry = project.status === "failed" || project.status === "source_auth_required";
+    const start = actionButton(canRetry ? "RETRY IMPORT" : "START PROCESSING", () => startIncomingProject(project, start));
     start.disabled = project.status === "processing" || project.status === "queued" || project.status === "ready";
     const review = document.createElement("a");
     review.className = "incoming-link";
@@ -2389,7 +2396,7 @@ async function startIncomingProject(project, button) {
     await loadDashboardData({ quiet: true });
   } catch (error) {
     button.disabled = false;
-    button.textContent = "START PROCESSING";
+    button.textContent = project.status === "failed" || project.status === "source_auth_required" ? "RETRY IMPORT" : "START PROCESSING";
     toast(error.message || "Could not start processing.");
   }
 }

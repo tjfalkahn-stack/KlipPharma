@@ -36,6 +36,7 @@ let selectedFiles = [];
 const fileModes = new Map();
 let currentProjects = [];
 let pollTimer;
+let dashboardRefreshTimer;
 const previewRecovery = new Map();
 let previewRecoveryQueue = Promise.resolve();
 let creatingAccount = false;
@@ -2102,6 +2103,7 @@ $("#logoutButton").addEventListener("click", async () => {
 
 $("#billingButton").addEventListener("click", openBilling);
 $("#dashboardButton").addEventListener("click", openDashboard);
+$("#incomingButton").addEventListener("click", () => openDashboard({ focusIncoming: true }));
 $("#billingClose").addEventListener("click", closeBilling);
 $("#dashboardClose").addEventListener("click", closeDashboard);
 billingModal.addEventListener("click", (event) => {
@@ -2184,20 +2186,32 @@ function closeBilling() {
 
 function closeDashboard() {
   dashboardModal.classList.add("hidden");
+  clearInterval(dashboardRefreshTimer);
 }
 
-async function openDashboard() {
+async function openDashboard(options = {}) {
   dashboardModal.classList.remove("hidden");
   $("#dashboardHistory").innerHTML = '<div class="dashboard-empty">Loading your account history…</div>';
+  $("#incomingList").innerHTML = '<div class="dashboard-empty">Loading incoming projects…</div>';
   $("#dashboardError").classList.add("hidden");
+  await loadDashboardData(options);
+  clearInterval(dashboardRefreshTimer);
+  dashboardRefreshTimer = setInterval(() => {
+    if (!dashboardModal.classList.contains("hidden")) loadDashboardData({ quiet: true });
+  }, 20000);
+}
+
+async function loadDashboardData(options = {}) {
   try {
     const response = await fetch("/api/account/dashboard");
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Could not load your dashboard.");
     renderDashboard(data);
+    if (options.focusIncoming) $("#incomingPanel").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
     $("#dashboardError").textContent = error.message;
     $("#dashboardError").classList.remove("hidden");
+    if (!options.quiet) $("#incomingList").innerHTML = `<div class="dashboard-empty">${error.message || "Could not load incoming projects."}</div>`;
   }
 }
 
@@ -2220,6 +2234,7 @@ function renderDashboard(data) {
   $("#dashboardUploads").textContent = stats.uploads || 0;
   $("#dashboardClips").textContent = stats.clips || 0;
   $("#dashboardCompleted").textContent = stats.completed || 0;
+  renderIncomingKlipdose(data.incomingKlipdose || [], stats.klipdose || {});
   const tier = String(subscription.planTier || user.planTier || "free").toLowerCase();
   $("#dashboardUpgrade").classList.toggle("hidden", tier === "business");
   $("#dashboardUpgradeTitle").textContent = new Set(["pro", "studio"]).has(tier)
@@ -2260,6 +2275,128 @@ function renderDashboard(data) {
     row.append(name, detail, open);
     history.append(row);
   });
+}
+
+function renderIncomingKlipdose(projects, stats) {
+  $("#incomingNew").textContent = stats.new || 0;
+  $("#incomingProcessing").textContent = stats.processing || 0;
+  $("#incomingReady").textContent = stats.ready || 0;
+  $("#incomingFailed").textContent = stats.failed || 0;
+  const root = $("#incomingList");
+  root.innerHTML = "";
+  if (!projects.length) {
+    root.innerHTML = '<div class="dashboard-empty">No active Klipdose handoffs have been received for this account yet.</div>';
+    return;
+  }
+  projects.forEach((project) => {
+    const card = document.createElement("article");
+    card.className = "incoming-card";
+    const thumb = document.createElement("div");
+    thumb.className = "incoming-thumb";
+    if (project.thumbnailUrl) thumb.style.backgroundImage = `url(${project.thumbnailUrl})`;
+    else thumb.textContent = "KP";
+    const body = document.createElement("div");
+    body.className = "incoming-body";
+    const meta = document.createElement("div");
+    meta.className = "incoming-meta";
+    ["KLIPDOSE", String(project.status || "queued").toUpperCase()].forEach((label) => {
+      const badge = document.createElement("span");
+      badge.textContent = label;
+      meta.append(badge);
+    });
+    const title = document.createElement("h4");
+    title.textContent = project.title || "Klipdose project";
+    const creator = document.createElement("p");
+    creator.textContent = project.creatorName || "Klipdose creator";
+    const details = document.createElement("small");
+    const received = project.receivedAt ? new Date(project.receivedAt).toLocaleString() : "Received time unavailable";
+    details.textContent = `${received} · Opportunity ${project.opportunityScore ?? "N/A"} · Confidence ${project.confidence ?? "N/A"}%`;
+    const action = document.createElement("p");
+    action.textContent = project.recommendedAction || "Review source";
+    body.append(meta, title, creator, details, action);
+    const controls = document.createElement("div");
+    controls.className = "incoming-actions";
+    const open = actionButton("OPEN IN EDITOR", () => openIncomingProject(project, open));
+    const start = actionButton(project.status === "failed" ? "RETRY PROCESSING" : "START PROCESSING", () => startIncomingProject(project, start));
+    start.disabled = project.status === "processing" || project.status === "queued" || project.status === "ready";
+    const review = document.createElement("a");
+    review.className = "incoming-link";
+    review.href = project.sourceUrl || "#";
+    review.target = "_blank";
+    review.rel = "noreferrer";
+    review.textContent = "REVIEW SOURCE";
+    if (!project.sourceUrl) review.setAttribute("aria-disabled", "true");
+    const archive = actionButton("ARCHIVE", () => archiveIncomingProject(project, archive));
+    controls.append(open, start, review, archive);
+    card.append(thumb, body, controls);
+    root.append(card);
+  });
+}
+
+function actionButton(label, handler) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.addEventListener("click", handler);
+  return button;
+}
+
+async function openIncomingProject(project, button) {
+  button.disabled = true;
+  button.textContent = "OPENING…";
+  try {
+    closeDashboard();
+    const response = await fetch(`/api/projects/${project.id}`);
+    const loaded = await response.json();
+    if (!response.ok) throw new Error(loaded.error || "Could not open this Klipdose project.");
+    currentProjects = [project.id];
+    if (loaded.status === "ready") {
+      renderResults([loaded]);
+      setView("results");
+    } else {
+      setView("processing");
+      pollProjects();
+    }
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "OPEN IN EDITOR";
+    toast(error.message || "Could not open this Klipdose project.");
+    openDashboard({ focusIncoming: true });
+  }
+}
+
+async function startIncomingProject(project, button) {
+  button.disabled = true;
+  button.textContent = "STARTING…";
+  try {
+    const response = await fetch(`/api/incoming/klipdose/${project.id}/start`, { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not start processing.");
+    await loadDashboardData({ quiet: true });
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "START PROCESSING";
+    toast(error.message || "Could not start processing.");
+  }
+}
+
+async function archiveIncomingProject(project, button) {
+  button.disabled = true;
+  button.textContent = "ARCHIVING…";
+  try {
+    const response = await fetch(`/api/incoming/klipdose/${project.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "archive" }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not archive project.");
+    await loadDashboardData({ quiet: true });
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "ARCHIVE";
+    toast(error.message || "Could not archive project.");
+  }
 }
 
 async function loadTeamPanel() {

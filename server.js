@@ -37,6 +37,7 @@ import {
   updateWorkspaceMemberRole,
   validateCredentials,
 } from "./lib/database.js";
+import { isArchivedKlipdoseProject, isKlipdoseProject, klipdoseIncomingStats, klipdoseProjectForClient, visibleKlipdoseProjects } from "./lib/incoming-klipdose.js";
 import {
   assertOwnedKey,
   createDirectUpload,
@@ -218,11 +219,13 @@ function existingKlipdoseProject(idempotencyKey) {
 }
 
 function createKlipdoseProject(input) {
+  const ownerId = process.env.KLIPDOSE_PROJECT_OWNER_ID || (authMode === "off" ? "local-owner" : "");
+  if (!ownerId) throw new Error("KLIPDOSE_PROJECT_OWNER_ID is required before production Klipdose handoffs can create visible projects.");
   const source = normalizeYouTubeSource(input.sourceUrl);
   const id = crypto.randomUUID();
   const job = {
     id,
-    userId: process.env.KLIPDOSE_PROJECT_OWNER_ID || "local-owner",
+    userId: ownerId,
     workspaceId: null,
     batchId: id,
     batchPosition: 1,
@@ -232,6 +235,8 @@ function createKlipdoseProject(input) {
     phase: "import",
     stage: "Accepted from Klipdose · connecting to YouTube source",
     originalName: sanitizeYouTubeTitle(input.title),
+    creatorName: input.creatorName,
+    thumbnailUrl: input.thumbnailUrl || null,
     filePath: null,
     objectKey: null,
     mimeType: "video/mp4",
@@ -253,6 +258,7 @@ function createKlipdoseProject(input) {
     confidence: input.confidence,
     recommendedAction: input.recommendedAction,
     evidence: input.evidence,
+    klipdoseReceivedAt: new Date().toISOString(),
     processingMode: "ai",
     sourceLanguage: normalizeSourceLanguage(input.language),
     translationLanguage: normalizeTranslationLanguage("original"),
@@ -539,6 +545,8 @@ app.get("/api/account/dashboard", requireUser, async (req, res) => {
       clipCount: job.clips?.length || 0,
       createdAt: job.createdAt,
     }));
+  const incomingKlipdose = visibleKlipdoseProjects([...jobs.values()], (job) => canAccessJob(req, job))
+    .map(klipdoseProjectForClient);
   res.json({
     user: userForClient(profileUser),
     subscription: subscriptionForClient(billingUser),
@@ -547,9 +555,69 @@ app.get("/api/account/dashboard", requireUser, async (req, res) => {
       uploads: projects.length,
       clips: projects.reduce((sum, project) => sum + Number(project.clipCount || 0), 0),
       completed: projects.filter((project) => project.status === "ready").length,
+      klipdose: klipdoseIncomingStats([...jobs.values()].filter((job) => canAccessJob(req, job))),
     },
     projects,
+    incomingKlipdose,
   });
+});
+
+app.get("/api/incoming/klipdose", requireUser, (req, res) => {
+  const includeArchived = req.query.archived === "true";
+  const projects = visibleKlipdoseProjects([...jobs.values()], (job) => canAccessJob(req, job), { includeArchived })
+    .map(klipdoseProjectForClient);
+  res.json({ projects, stats: klipdoseIncomingStats([...jobs.values()].filter((job) => canAccessJob(req, job))) });
+});
+
+app.post("/api/incoming/klipdose/:id/start", requireUser, requireWorkspaceEditor, (req, res) => {
+  const job = ownedJob(req, req.params.id);
+  if (!job || !isKlipdoseProject(job)) return res.status(404).json({ error: "Incoming Klipdose project not found." });
+  if (isArchivedKlipdoseProject(job)) return res.status(409).json({ error: "Restore this incoming project before processing it." });
+  if (job.status === "ready") return res.json({ project: klipdoseProjectForClient(job), alreadyReady: true });
+  if (job.status === "processing" || job.status === "queued") return res.json({ project: klipdoseProjectForClient(job), alreadyProcessing: true });
+  if (!job.sourceUrl) return res.status(400).json({ error: "This Klipdose project is missing its source URL." });
+  Object.assign(job, {
+    status: "processing",
+    progress: 3,
+    phase: "import",
+    stage: "Restarting Klipdose source import",
+    error: null,
+    archivedAt: null,
+    dismissedAt: null,
+  });
+  persistJob(job);
+  importYouTubeSource(job, job.sourceUrl)
+    .catch((error) => {
+      console.error("Klipdose incoming import failed:", { projectId: job.id, message: error.message });
+      removeYouTubeWorkingFiles(job.id);
+      Object.assign(job, {
+        status: "failed",
+        progress: Math.min(95, Math.max(3, Number(job.progress || 3))),
+        phase: "failed",
+        stage: "Klipdose source import failed",
+        error: friendlyYouTubeError(error),
+        failedAt: new Date().toISOString(),
+      });
+      persistJob(job);
+    });
+  res.status(202).json({ project: klipdoseProjectForClient(job) });
+});
+
+app.patch("/api/incoming/klipdose/:id", requireUser, requireWorkspaceEditor, (req, res) => {
+  const job = ownedJob(req, req.params.id);
+  if (!job || !isKlipdoseProject(job)) return res.status(404).json({ error: "Incoming Klipdose project not found." });
+  const action = String(req.body?.action || "").toLowerCase();
+  if (action === "archive" || action === "dismiss") {
+    job.archivedAt = new Date().toISOString();
+    job.dismissedAt = job.archivedAt;
+  } else if (action === "restore") {
+    delete job.archivedAt;
+    delete job.dismissedAt;
+  } else {
+    return res.status(400).json({ error: "Choose archive, dismiss, or restore." });
+  }
+  persistJob(job);
+  res.json({ project: klipdoseProjectForClient(job) });
 });
 
 app.get("/api/team", requireUser, async (req, res) => {
@@ -2988,6 +3056,12 @@ function ownedJob(req, id) {
 function canAccessJob(req, job) {
   if (!job || !req.user) return false;
   if (job.userId === req.user.id) return true;
+  if (
+    isKlipdoseProject(job) &&
+    job.userId === "local-owner" &&
+    process.env.KLIPDOSE_PROJECT_OWNER_ID &&
+    req.user.id === process.env.KLIPDOSE_PROJECT_OWNER_ID
+  ) return true;
   return Boolean(req.team?.businessActive && req.team.memberIds?.includes(job.userId));
 }
 

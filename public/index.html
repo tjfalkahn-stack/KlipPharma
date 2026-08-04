@@ -18,6 +18,7 @@
       <div class="account-menu hidden" id="accountMenu">
         <span class="plan-pill" id="accountPlan">FREE</span>
         <span id="accountEmail"></span>
+        <button type="button" id="incomingButton">Incoming Projects</button>
         <button type="button" id="dashboardButton">Dashboard</button>
         <button type="button" id="billingButton">Billing</button>
         <button type="button" id="logoutButton">Sign out</button>
@@ -406,6 +407,19 @@
         <div><strong id="dashboardClips">0</strong><span>Klips found</span></div>
         <div><strong id="dashboardCompleted">0</strong><span>Completed</span></div>
       </div>
+      <section class="incoming-panel" id="incomingPanel">
+        <div class="dashboard-history-head">
+          <div><span class="billing-kicker">INCOMING FROM KLIPDOSE</span><h3>Incoming Projects</h3></div>
+          <small>Auto-refreshes while open</small>
+        </div>
+        <div class="incoming-stats">
+          <div><strong id="incomingNew">0</strong><span>New from Klipdose</span></div>
+          <div><strong id="incomingProcessing">0</strong><span>Processing</span></div>
+          <div><strong id="incomingReady">0</strong><span>Ready for review</span></div>
+          <div><strong id="incomingFailed">0</strong><span>Failed</span></div>
+        </div>
+        <div class="incoming-list" id="incomingList"><div class="dashboard-empty">Loading incoming projects…</div></div>
+      </section>
       <section class="upgrade-nudge" id="dashboardUpgrade">
         <span>LEVEL UP YOUR STUDIO</span>
         <h3 id="dashboardUpgradeTitle">Unlock KlipPharma Pro</h3>

@@ -115,6 +115,39 @@ test("parses the production Incoming Projects API shape with failed projects", (
   assert.equal(parsed.projects.every((item) => item.sourceBadge === "KLIPDOSE"), true);
 });
 
+test("dashboard contract preserves five failed Klipdose projects", () => {
+  const productionShape = {
+    projects: Array.from({ length: 5 }, (_, index) => ({
+      id: `failed-${index + 1}`,
+      batchId: `failed-${index + 1}`,
+      title: `Klipdose handoff ${index + 1}`,
+      creatorName: "Kai Cenat",
+      sourceUrl: "https://www.youtube.com/watch?v=abc123XYZ90",
+      thumbnailUrl: "https://i.ytimg.com/vi/abc123XYZ90/hqdefault.jpg",
+      opportunityScore: 54,
+      confidence: 89,
+      recommendedAction: "Review the source.",
+      receivedAt: "2026-08-04T12:00:00.000Z",
+      status: "failed",
+      stage: "Klipdose source import failed",
+      progress: 3,
+      sourceBadge: "KLIPDOSE",
+      archivedAt: null,
+      sourceContentId: "abc123XYZ90",
+      idempotencyKey: `klipdose-failed-${index + 1}`,
+    })),
+    stats: { new: 0, processing: 0, ready: 0, failed: 5 },
+  };
+
+  const parsed = parseIncomingKlipdoseResponse(productionShape);
+  assert.equal(parsed.projects.length, 5);
+  assert.equal(parsed.stats.failed, 5);
+  assert.equal(parsed.stats.new, 0);
+  assert.equal(parsed.stats.processing, 0);
+  assert.equal(parsed.stats.ready, 0);
+  assert.deepEqual(parsed.projects.map((project) => project.status), ["failed", "failed", "failed", "failed", "failed"]);
+});
+
 test("rejects incorrect Incoming Projects nesting instead of silently zeroing", () => {
   assert.throws(() => parseIncomingKlipdoseResponse({ incoming: [], stats: { failed: 3 } }), /projects array/);
   assert.throws(() => parseIncomingKlipdoseResponse({ projects: [] }), /stats/);

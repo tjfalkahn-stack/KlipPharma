@@ -1,4 +1,11 @@
 const $ = (selector) => document.querySelector(selector);
+const ASSET_VERSION = "0.29.3";
+window.__KLIPPHARMA_ASSET_VERSION__ = ASSET_VERSION;
+console.info("[KlipPharma dashboard] asset loaded", { version: ASSET_VERSION, path: window.location.pathname });
+
+function logIncomingDashboardFetch(details) {
+  console.info("[KlipPharma Incoming Projects]", details);
+}
 const form = $("#uploadForm");
 const appShell = $("#appShell");
 const authView = $("#authView");
@@ -2207,18 +2214,32 @@ async function loadDashboardData(options = {}) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Could not load your dashboard.");
     renderDashboard(data);
-    await loadIncomingKlipdoseData();
+    try {
+      await loadIncomingKlipdoseData();
+    } catch (incomingError) {
+      $("#dashboardError").textContent = incomingError.message || "Could not load incoming Klipdose projects.";
+      $("#dashboardError").classList.remove("hidden");
+      $("#incomingList").innerHTML = `<div class="dashboard-empty">${incomingError.message || "Could not load incoming Klipdose projects."}</div>`;
+    }
     if (options.focusIncoming) $("#incomingPanel").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
     $("#dashboardError").textContent = error.message;
     $("#dashboardError").classList.remove("hidden");
-    if (!options.quiet) $("#incomingList").innerHTML = `<div class="dashboard-empty">${error.message || "Could not load incoming projects."}</div>`;
+    $("#incomingList").innerHTML = `<div class="dashboard-empty">${error.message || "Could not load incoming projects."}</div>`;
   }
 }
 
 async function loadIncomingKlipdoseData() {
-  const response = await fetch("/api/incoming/klipdose", { cache: "no-store" });
+  const fetchUrl = "/api/incoming/klipdose";
+  const response = await fetch(fetchUrl, { cache: "no-store" });
   const data = await response.json().catch(() => null);
+  logIncomingDashboardFetch({
+    fetchUrl,
+    httpStatus: response.status,
+    responseBody: data,
+    projectCount: Array.isArray(data?.projects) ? data.projects.length : null,
+    stats: data?.stats || null,
+  });
   if (!response.ok) throw new Error(data?.error || "Could not load incoming Klipdose projects.");
   if (!data || !Array.isArray(data.projects)) throw new Error("Incoming Projects response missing projects array.");
   if (!data.stats || typeof data.stats !== "object") throw new Error("Incoming Projects response missing stats.");
@@ -2292,17 +2313,29 @@ function renderDashboard(data) {
 }
 
 function renderIncomingKlipdose(projects, stats) {
-  $("#incomingNew").textContent = stats.new || 0;
-  $("#incomingProcessing").textContent = stats.processing || 0;
-  $("#incomingReady").textContent = stats.ready || 0;
-  $("#incomingFailed").textContent = stats.failed || 0;
+  const normalizedStats = {
+    new: Number(stats?.new ?? 0),
+    processing: Number(stats?.processing ?? 0),
+    ready: Number(stats?.ready ?? 0),
+    failed: Number(stats?.failed ?? 0),
+  };
+  const normalizedProjects = Array.isArray(projects) ? projects : [];
+  logIncomingDashboardFetch({
+    render: true,
+    projectCount: normalizedProjects.length,
+    stats: normalizedStats,
+  });
+  $("#incomingNew").textContent = normalizedStats.new;
+  $("#incomingProcessing").textContent = normalizedStats.processing;
+  $("#incomingReady").textContent = normalizedStats.ready;
+  $("#incomingFailed").textContent = normalizedStats.failed;
   const root = $("#incomingList");
   root.innerHTML = "";
-  if (!projects.length) {
+  if (!normalizedProjects.length) {
     root.innerHTML = '<div class="dashboard-empty">No active Klipdose handoffs have been received for this account yet.</div>';
     return;
   }
-  projects.forEach((project) => {
+  normalizedProjects.forEach((project) => {
     const card = document.createElement("article");
     card.className = "incoming-card";
     const thumb = document.createElement("div");

@@ -200,6 +200,10 @@ app.post("/api/billing/webhook", express.raw({ type: "application/json" }), asyn
 app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
+app.get("/dashboard", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
 function timingSafeSecretEqual(provided, expected) {
   if (!provided || !expected) return false;
   const providedBuffer = Buffer.from(String(provided));

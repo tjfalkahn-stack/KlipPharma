@@ -103,6 +103,8 @@ const oauthStates = new Map();
 const localSocialConnections = new Map();
 const integrationAttempts = new Map();
 const maxConcurrentProjects = 2;
+const defaultTikTokScopes = "user.info.basic,user.info.profile,user.info.stats,video.list,video.upload,video.publish";
+const productionAppOrigin = "https://app.klippharma.com";
 const proFeaturesOpen = !new Set(["false", "0", "off", "no"])
   .has(String(process.env.PRO_FEATURES_OPEN ?? "true").trim().toLowerCase());
 const creatorModes = {
@@ -800,7 +802,8 @@ app.get("/api/integrations/status", requireUser, async (req, res) => {
 
 app.get("/api/integrations/tiktok/oauth/start", requireUser, (req, res) => {
   try {
-    const config = requireTikTokConfig();
+    const config = requireTikTokConfig(req);
+    const returnOrigin = tiktokReturnOrigin(req);
     const state = crypto.randomBytes(32).toString("base64url");
     const returnTo = safeReturnTo(req.query.returnTo);
     oauthStates.set(state, {
@@ -812,11 +815,11 @@ app.get("/api/integrations/tiktok/oauth/start", requireUser, (req, res) => {
     res.cookie("klippharma_tiktok_oauth_state", state, {
       httpOnly: true,
       sameSite: "lax",
-      secure: appBaseUrl.startsWith("https://"),
+      secure: returnOrigin.startsWith("https://"),
       maxAge: 10 * 60 * 1000,
       path: "/",
     });
-    const scope = normalizeTikTokScopes(process.env.TIKTOK_SCOPES || "user.info.basic,video.upload,video.publish");
+    const scope = normalizeTikTokScopes(process.env.TIKTOK_SCOPES || defaultTikTokScopes);
     const authorizeUrl = new URL("https://www.tiktok.com/v2/auth/authorize/");
     authorizeUrl.searchParams.set("client_key", config.clientKey);
     authorizeUrl.searchParams.set("scope", scope.join(","));
@@ -843,9 +846,9 @@ app.get("/api/integrations/tiktok/oauth/callback", requireUser, async (req, res)
     if (req.query.error) throw new AuthError(String(req.query.error_description || req.query.error), 400);
     const code = String(req.query.code || "");
     if (!code) throw new AuthError("TikTok did not return an authorization code.", 400);
-    const token = await exchangeTikTokCode(code);
+    const token = await exchangeTikTokCode(code, req);
     const scopes = normalizeTikTokScopes(token.scope || "");
-    const profile = await fetchTikTokUserProfile(token.access_token).catch((error) => ({
+    const profile = await fetchTikTokUserProfile(token.access_token, scopes).catch((error) => ({
       error: error.message || "Profile could not be loaded yet.",
     }));
     await saveTikTokConnectionForRequest(req, {
@@ -857,11 +860,11 @@ app.get("/api/integrations/tiktok/oauth/callback", requireUser, async (req, res)
       accessTokenExpiresAt: secondsFromNow(token.expires_in),
       refreshTokenExpiresAt: secondsFromNow(token.refresh_expires_in),
     });
-    const done = new URL(redirectBase, appBaseUrl);
+    const done = new URL(redirectBase, tiktokReturnOrigin(req));
     done.searchParams.set("tiktok", "connected");
     res.redirect(done.toString());
   } catch (error) {
-    const failed = new URL(redirectBase, appBaseUrl);
+    const failed = new URL(redirectBase, tiktokReturnOrigin(req));
     failed.searchParams.set("tiktok", "error");
     failed.searchParams.set("message", error.message || "TikTok authorization failed.");
     res.redirect(failed.toString());
@@ -873,6 +876,35 @@ app.delete("/api/integrations/tiktok", requireUser, async (req, res) => {
   if (connection?.accessToken) await revokeTikTokToken(connection.accessToken).catch(() => {});
   await deleteTikTokConnectionForRequest(req);
   res.json({ ok: true });
+});
+
+app.post("/api/integrations/tiktok/refresh", requireUser, async (req, res) => {
+  try {
+    const connection = await requireTikTokConnection(req, "user.info.basic");
+    const scopes = normalizeTikTokScopes(connection.scopes);
+    const profile = await fetchTikTokUserProfile(connection.accessToken, scopes);
+    const saved = await saveTikTokConnectionForRequest(req, {
+      providerUserId: profile.open_id || connection.providerUserId || null,
+      profile,
+      scopes,
+      accessToken: connection.accessToken,
+      refreshToken: connection.refreshToken || null,
+      accessTokenExpiresAt: connection.accessTokenExpiresAt || null,
+      refreshTokenExpiresAt: connection.refreshTokenExpiresAt || null,
+    });
+    res.json({ tiktok: tiktokConnectionForClient(saved) });
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message || "Could not refresh TikTok profile." });
+  }
+});
+
+app.get("/api/integrations/tiktok/videos", requireUser, async (req, res) => {
+  try {
+    const connection = await requireTikTokConnection(req, "video.list");
+    res.json(await fetchTikTokVideos(connection.accessToken));
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message || "Could not load recent TikTok videos." });
+  }
 });
 
 app.get("/api/integrations/tiktok/creator-info", requireUser, async (req, res) => {
@@ -3764,14 +3796,48 @@ function assTime(seconds) {
   return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
 }
 
-function requireTikTokConfig() {
+function requireTikTokConfig(req = null) {
   const clientKey = String(process.env.TIKTOK_CLIENT_KEY || "").trim();
   const clientSecret = String(process.env.TIKTOK_CLIENT_SECRET || "").trim();
-  const redirectUri = String(process.env.TIKTOK_REDIRECT_URI || `${appBaseUrl}/api/integrations/tiktok/oauth/callback`).trim();
+  const redirectUri = String(process.env.TIKTOK_REDIRECT_URI || `${tiktokReturnOrigin(req)}/api/integrations/tiktok/oauth/callback`).trim();
   if (!clientKey || !clientSecret || !redirectUri) {
     throw new AuthError("TikTok Login Kit needs TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET, and TIKTOK_REDIRECT_URI.", 503);
   }
   return { clientKey, clientSecret, redirectUri };
+}
+
+function tiktokReturnOrigin(req = null) {
+  if (isProductionRuntime()) return productionAppOrigin;
+  const configured = normalizeOrigin(process.env.APP_BASE_URL);
+  if (configured) return configured;
+  return requestOrigin(req) || appBaseUrl;
+}
+
+function isProductionRuntime() {
+  const railwayEnvironment = String(process.env.RAILWAY_ENVIRONMENT || "").trim().toLowerCase();
+  return process.env.NODE_ENV === "production"
+    || railwayEnvironment === "production"
+    || Boolean(process.env.RAILWAY_PROJECT_ID || process.env.RAILWAY_SERVICE_ID);
+}
+
+function requestOrigin(req) {
+  if (!req) return null;
+  const host = String(req.get("x-forwarded-host") || req.get("host") || "").split(",")[0].trim();
+  if (!host) return null;
+  const proto = String(req.get("x-forwarded-proto") || req.protocol || "http").split(",")[0].trim();
+  return normalizeOrigin(`${proto}://${host}`);
+}
+
+function normalizeOrigin(value) {
+  const raw = String(value || "").trim().replace(/\/+$/, "");
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (!new Set(["http:", "https:"]).has(url.protocol)) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeTikTokScopes(value) {
@@ -3779,8 +3845,8 @@ function normalizeTikTokScopes(value) {
   return [...new Set(raw.map((scope) => String(scope || "").trim()).filter(Boolean))];
 }
 
-async function exchangeTikTokCode(code) {
-  const config = requireTikTokConfig();
+async function exchangeTikTokCode(code, req = null) {
+  const config = requireTikTokConfig(req);
   const body = new URLSearchParams({
     client_key: config.clientKey,
     client_secret: config.clientSecret,
@@ -3814,12 +3880,51 @@ async function revokeTikTokToken(accessToken) {
   });
 }
 
-async function fetchTikTokUserProfile(accessToken) {
-  const data = await tiktokApi("/v2/user/info/?fields=open_id,avatar_url,avatar_url_100,display_name", {
+async function fetchTikTokUserProfile(accessToken, scopes = []) {
+  const fields = tiktokProfileFieldsForScopes(scopes);
+  const data = await tiktokApi(`/v2/user/info/?fields=${encodeURIComponent(fields.join(","))}`, {
     method: "GET",
     token: accessToken,
   });
   return data.data?.user || {};
+}
+
+function tiktokProfileFieldsForScopes(scopes = []) {
+  const granted = new Set(normalizeTikTokScopes(scopes));
+  const fields = ["open_id", "avatar_url", "avatar_url_100", "avatar_large_url", "display_name"];
+  if (granted.has("user.info.profile")) {
+    fields.push("username", "bio_description", "profile_deep_link", "is_verified");
+  }
+  if (granted.has("user.info.stats")) {
+    fields.push("follower_count", "following_count", "likes_count", "video_count");
+  }
+  return fields;
+}
+
+async function fetchTikTokVideos(accessToken) {
+  const fields = [
+    "id",
+    "create_time",
+    "cover_image_url",
+    "share_url",
+    "video_description",
+    "duration",
+    "title",
+    "like_count",
+    "comment_count",
+    "share_count",
+    "view_count",
+  ];
+  const data = await tiktokApi(`/v2/video/list/?fields=${encodeURIComponent(fields.join(","))}`, {
+    method: "POST",
+    token: accessToken,
+    body: { max_count: 6 },
+  });
+  return {
+    videos: (data.data?.videos || []).map(tiktokVideoForClient),
+    cursor: data.data?.cursor || null,
+    hasMore: Boolean(data.data?.has_more),
+  };
 }
 
 async function tiktokApi(pathname, { method = "GET", token, body = null } = {}) {
@@ -3898,19 +4003,63 @@ function tiktokConnectionForClient(connection) {
     };
   }
   const profile = connection.profile || {};
+  const scopes = normalizeTikTokScopes(connection.scopes);
+  const scopeSet = new Set(scopes);
   return {
     connected: true,
     configured: true,
     provider: "tiktok",
     profile: {
       displayName: profile.display_name || "TikTok creator",
-      avatarUrl: profile.avatar_url_100 || profile.avatar_url || null,
+      avatarUrl: safeTikTokUrl(profile.avatar_large_url || profile.avatar_url_100 || profile.avatar_url),
+      username: scopeSet.has("user.info.profile") ? profile.username || null : null,
+      bio: scopeSet.has("user.info.profile") ? profile.bio_description || null : null,
+      profileUrl: scopeSet.has("user.info.profile") ? safeTikTokUrl(profile.profile_deep_link) : null,
+      verified: scopeSet.has("user.info.profile") ? profile.is_verified === true : null,
       openId: profile.open_id || connection.providerUserId || null,
     },
-    scopes: normalizeTikTokScopes(connection.scopes),
+    stats: scopeSet.has("user.info.stats") ? {
+      followers: safeCount(profile.follower_count),
+      following: safeCount(profile.following_count),
+      likes: safeCount(profile.likes_count),
+      videos: safeCount(profile.video_count),
+    } : null,
+    scopes,
     connectedAt: connection.connectedAt || connection.connected_at || null,
     updatedAt: connection.updatedAt || connection.updated_at || null,
   };
+}
+
+function tiktokVideoForClient(video) {
+  return {
+    id: video.id || null,
+    title: video.title || "",
+    description: video.video_description || "",
+    coverImageUrl: safeTikTokUrl(video.cover_image_url),
+    shareUrl: safeTikTokUrl(video.share_url),
+    createTime: Number.isFinite(Number(video.create_time)) ? Number(video.create_time) : null,
+    duration: safeCount(video.duration),
+    views: safeCount(video.view_count),
+    likes: safeCount(video.like_count),
+    comments: safeCount(video.comment_count),
+    shares: safeCount(video.share_count),
+  };
+}
+
+function safeCount(value) {
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? count : null;
+}
+
+function safeTikTokUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
 }
 
 function safeReturnTo(value) {

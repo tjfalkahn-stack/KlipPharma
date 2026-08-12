@@ -2673,28 +2673,185 @@ function renderTikTokIntegration(tiktok) {
     return;
   }
   const profile = tiktok.profile || {};
-  const avatar = profile.avatarUrl ? `<img src="${profile.avatarUrl}" alt="" />` : '<span class="avatar-fallback">♪</span>';
+  const scopes = tiktok.scopes || [];
+  const hasProfile = scopes.includes("user.info.profile");
+  const hasStats = scopes.includes("user.info.stats");
+  const hasVideos = scopes.includes("video.list");
   body.innerHTML = `
     <span class="status-badge connected">Connected</span>
-    <div class="connected-profile">${avatar}<div><strong></strong><small></small></div></div>
+    <div class="connected-profile tiktok-profile-card">
+      <div class="tiktok-avatar-slot"></div>
+      <div class="tiktok-profile-main">
+        <div class="tiktok-name-line"><strong></strong><span class="verified-badge hidden">Verified</span></div>
+        <small class="tiktok-username"></small>
+        <p class="tiktok-bio hidden"></p>
+        <a class="tiktok-profile-link hidden" target="_blank" rel="noopener noreferrer">View TikTok Profile</a>
+        <small class="tiktok-open-id"></small>
+      </div>
+    </div>
+    <div class="tiktok-stats-row hidden"></div>
+    <div class="recent-tiktok-videos hidden">
+      <div class="section-mini-head"><strong>Recent TikTok Videos</strong><small></small></div>
+      <div class="tiktok-video-list">Loading recent videos…</div>
+    </div>
     <p class="scope-list"></p>
   `;
+  const avatarSlot = body.querySelector(".tiktok-avatar-slot");
+  if (profile.avatarUrl) {
+    const image = document.createElement("img");
+    image.src = profile.avatarUrl;
+    image.alt = "";
+    avatarSlot.append(image);
+  } else {
+    avatarSlot.innerHTML = '<span class="avatar-fallback">♪</span>';
+  }
   body.querySelector("strong").textContent = profile.displayName || "TikTok creator";
-  body.querySelector("small").textContent = profile.openId || "Sandbox account authorized";
-  body.querySelector(".scope-list").textContent = `Scopes granted: ${tiktok.scopes?.length ? tiktok.scopes.join(", ") : "none reported"}`;
-  const reconnect = document.createElement("button");
-  reconnect.type = "button";
-  reconnect.className = "secondary";
-  reconnect.textContent = "Reconnect";
-  reconnect.addEventListener("click", () => {
-    window.location.assign("/api/integrations/tiktok/oauth/start?returnTo=%2F%3Fsettings%3Dintegrations");
-  });
+  body.querySelector(".verified-badge").classList.toggle("hidden", profile.verified !== true);
+  const username = body.querySelector(".tiktok-username");
+  if (hasProfile && profile.username) {
+    username.textContent = `@${profile.username}`;
+  } else {
+    username.classList.add("hidden");
+  }
+  if (hasProfile && profile.bio) {
+    body.querySelector(".tiktok-bio").textContent = profile.bio;
+    body.querySelector(".tiktok-bio").classList.remove("hidden");
+  }
+  if (hasProfile && profile.profileUrl) {
+    const link = body.querySelector(".tiktok-profile-link");
+    link.href = profile.profileUrl;
+    link.classList.remove("hidden");
+  }
+  const openId = body.querySelector(".tiktok-open-id");
+  if (!profile.username && profile.openId) openId.textContent = `Internal TikTok ID: ${profile.openId}`;
+  else openId.classList.add("hidden");
+  if (hasStats && tiktok.stats) {
+    const stats = body.querySelector(".tiktok-stats-row");
+    stats.classList.remove("hidden");
+    [
+      ["Followers", tiktok.stats.followers],
+      ["Following", tiktok.stats.following],
+      ["Likes", tiktok.stats.likes],
+      ["Videos", tiktok.stats.videos],
+    ].forEach(([label, value]) => {
+      const item = document.createElement("span");
+      item.innerHTML = `<b></b><small></small>`;
+      item.querySelector("b").textContent = formatTikTokCount(value);
+      item.querySelector("small").textContent = label;
+      stats.append(item);
+    });
+  }
+  if (hasVideos) {
+    body.querySelector(".recent-tiktok-videos").classList.remove("hidden");
+    loadTikTokVideos();
+  }
+  body.querySelector(".scope-list").textContent = `Granted scopes: ${scopes.length ? scopes.join(", ") : "none reported"}`;
+  const refresh = document.createElement("button");
+  refresh.type = "button";
+  refresh.className = "secondary";
+  refresh.textContent = "Refresh TikTok";
+  refresh.addEventListener("click", refreshTikTok);
   const disconnect = document.createElement("button");
   disconnect.type = "button";
   disconnect.className = "danger-secondary";
   disconnect.textContent = "Disconnect";
   disconnect.addEventListener("click", disconnectTikTok);
-  actions.append(reconnect, disconnect);
+  actions.append(refresh, disconnect);
+}
+
+async function refreshTikTok() {
+  const response = await fetch("/api/integrations/tiktok/refresh", { method: "POST" });
+  const data = await response.json();
+  if (!response.ok) return toast(data.error || "Could not refresh TikTok.");
+  integrationsState = { ...integrationsState, tiktok: data.tiktok };
+  renderTikTokIntegration(data.tiktok);
+  toast("TikTok refreshed.");
+}
+
+async function loadTikTokVideos() {
+  const list = $("#tiktokIntegrationBody .tiktok-video-list");
+  const summary = $("#tiktokIntegrationBody .section-mini-head small");
+  if (!list) return;
+  try {
+    const response = await fetch("/api/integrations/tiktok/videos");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not load recent TikTok videos.");
+    renderTikTokVideos(data.videos || []);
+    if (summary) summary.textContent = data.hasMore ? "Showing latest videos" : `${(data.videos || []).length} available`;
+  } catch (error) {
+    list.textContent = error.message || "Could not load recent TikTok videos.";
+  }
+}
+
+function renderTikTokVideos(videos) {
+  const list = $("#tiktokIntegrationBody .tiktok-video-list");
+  if (!list) return;
+  list.innerHTML = "";
+  if (!videos.length) {
+    list.innerHTML = "<p>No public TikTok videos were returned for this sandbox account.</p>";
+    return;
+  }
+  videos.forEach((video) => {
+    const item = document.createElement("article");
+    item.className = "tiktok-video-card";
+    const media = document.createElement(video.shareUrl ? "a" : "div");
+    media.className = "tiktok-video-cover";
+    if (video.shareUrl) {
+      media.href = video.shareUrl;
+      media.target = "_blank";
+      media.rel = "noopener noreferrer";
+      media.setAttribute("aria-label", "Open TikTok video");
+    }
+    if (video.coverImageUrl) {
+      const image = document.createElement("img");
+      image.src = video.coverImageUrl;
+      image.alt = "";
+      media.append(image);
+    } else {
+      media.textContent = "TikTok";
+    }
+    const copy = document.createElement("div");
+    copy.className = "tiktok-video-copy";
+    const title = document.createElement("strong");
+    title.textContent = video.title || video.description || "TikTok video";
+    const meta = document.createElement("small");
+    meta.textContent = [formatTikTokDate(video.createTime), formatTikTokDuration(video.duration)]
+      .filter(Boolean)
+      .join(" · ");
+    const description = document.createElement("p");
+    description.textContent = video.description || "";
+    const metrics = document.createElement("small");
+    metrics.textContent = `${formatTikTokCount(video.views)} views · ${formatTikTokCount(video.likes)} likes · ${formatTikTokCount(video.comments)} comments · ${formatTikTokCount(video.shares)} shares`;
+    copy.append(title, meta, description, metrics);
+    if (video.shareUrl) {
+      const link = document.createElement("a");
+      link.href = video.shareUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = "Open on TikTok";
+      copy.append(link);
+    }
+    item.append(media, copy);
+    list.append(item);
+  });
+}
+
+function formatTikTokCount(value) {
+  return Number.isFinite(Number(value)) ? new Intl.NumberFormat().format(Number(value)) : "n/a";
+}
+
+function formatTikTokDate(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return "";
+  return new Date(seconds * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function formatTikTokDuration(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return "";
+  const minutes = Math.floor(seconds / 60);
+  const remaining = Math.round(seconds % 60);
+  return `${minutes}:${String(remaining).padStart(2, "0")}`;
 }
 
 async function disconnectTikTok() {

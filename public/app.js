@@ -15,8 +15,11 @@ const authError = $("#authError");
 const accountMenu = $("#accountMenu");
 const billingModal = $("#billingModal");
 const dashboardModal = $("#dashboardModal");
+const settingsModal = $("#settingsModal");
+const tiktokPublishModal = $("#tiktokPublishModal");
 const checkoutAgreement = $("#checkoutAgreement");
 const cancelAgreement = $("#cancelAgreement");
+const tiktokConsent = $("#tiktokConsent");
 const videoInput = $("#video");
 const dropzone = $("#dropzone");
 const youtubeUrl = $("#youtubeUrl");
@@ -51,6 +54,9 @@ let uploadMode = "local";
 let currentUser = null;
 let billingState = null;
 let selectedBillingPlanKey = "creator_monthly";
+let integrationsState = null;
+let tiktokPublishTarget = null;
+let tiktokCreatorInfo = null;
 const paidPlanTiers = new Set(["paid", "pro", "creator", "studio", "business"]);
 const creatorModeCopy = {
   auto: ["Smart Detect", "Balanced selection for mixed or general content."],
@@ -553,12 +559,21 @@ function renderMontage(projects) {
     download.href = montage.downloadUrl;
     download.download = "";
     download.textContent = "Download current MP4";
+    const tiktok = document.createElement("button");
+    tiktok.type = "button";
+    tiktok.className = "automix-tiktok";
+    tiktok.textContent = "Send to TikTok";
+    tiktok.addEventListener("click", () => openTikTokPublish({
+      targetType: "montage",
+      projectId: owner.id,
+      title: montage.title || "KlipPharma Auto-Mix",
+    }));
     const deleteOutput = document.createElement("button");
     deleteOutput.type = "button";
     deleteOutput.className = "automix-delete";
     deleteOutput.textContent = "Delete Auto-Mix MP4";
     deleteOutput.addEventListener("click", () => deleteMontageExport(owner, deleteOutput));
-    actions.append(badge, review, download, deleteOutput);
+    actions.append(badge, review, download, tiktok, deleteOutput);
     section.append(player, actions);
     const editor = buildMontageEditor(owner, projects, montage, player, review);
     section.append(editor);
@@ -1020,6 +1035,7 @@ function renderProjectClips(project, grid) {
     installTrimmer(project, clip, card);
     const renderButton = node.querySelector(".render");
     const download = node.querySelector(".download");
+    const tiktokExport = node.querySelector(".tiktok-export");
     const deleteExport = node.querySelector(".delete-export");
     const finalPreview = node.querySelector(".final-render-preview");
     const finalPreviewVideo = node.querySelector(".final-render-video");
@@ -1027,6 +1043,7 @@ function renderProjectClips(project, grid) {
       renderButton.classList.add("hidden");
       download.href = clip.downloadUrl;
       download.classList.remove("hidden");
+      tiktokExport.classList.remove("hidden");
       deleteExport.classList.remove("hidden");
       finalPreviewVideo.src = clip.downloadUrl;
       finalPreview.classList.remove("hidden");
@@ -1039,6 +1056,12 @@ function renderProjectClips(project, grid) {
         toast(error.message || "Could not save this cut.");
       }
     });
+    tiktokExport.addEventListener("click", () => openTikTokPublish({
+      targetType: "clip",
+      projectId: project.id,
+      clipId: clip.id,
+      title: clip.title || "KlipPharma klip",
+    }));
     deleteExport.addEventListener("click", () => deleteClipExport(project, clip, card, deleteExport));
     node.querySelectorAll(".feedback button").forEach((button) => button.addEventListener("click", () => rate(project.id, clip.id, button)));
     grid.append(node);
@@ -1246,6 +1269,7 @@ async function deleteClipExport(project, clip, card, button) {
   clip.renderStatus = "idle";
   delete clip.downloadUrl;
   card.querySelector(".download").classList.add("hidden");
+  card.querySelector(".tiktok-export").classList.add("hidden");
   const finalPreview = card.querySelector(".final-render-preview");
   const finalPreviewVideo = card.querySelector(".final-render-video");
   finalPreview.classList.add("hidden");
@@ -2007,6 +2031,7 @@ function requestCompatiblePreview(project) {
       const link = card.querySelector(".download");
       link.href = clip.downloadUrl;
       link.classList.remove("hidden");
+      card.querySelector(".tiktok-export").classList.remove("hidden");
       const finalPreview = card.querySelector(".final-render-preview");
       const finalPreviewVideo = card.querySelector(".final-render-video");
       finalPreviewVideo.src = clip.downloadUrl;
@@ -2111,17 +2136,28 @@ $("#logoutButton").addEventListener("click", async () => {
 $("#billingButton").addEventListener("click", openBilling);
 $("#dashboardButton").addEventListener("click", openDashboard);
 $("#incomingButton").addEventListener("click", () => openDashboard({ focusIncoming: true }));
+$("#settingsButton").addEventListener("click", openSettings);
 $("#billingClose").addEventListener("click", closeBilling);
 $("#dashboardClose").addEventListener("click", closeDashboard);
+$("#settingsClose").addEventListener("click", closeSettings);
+$("#tiktokPublishClose").addEventListener("click", closeTikTokPublish);
 billingModal.addEventListener("click", (event) => {
   if (event.target === billingModal) closeBilling();
 });
 dashboardModal.addEventListener("click", (event) => {
   if (event.target === dashboardModal) closeDashboard();
 });
+settingsModal.addEventListener("click", (event) => {
+  if (event.target === settingsModal) closeSettings();
+});
+tiktokPublishModal.addEventListener("click", (event) => {
+  if (event.target === tiktokPublishModal) closeTikTokPublish();
+});
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !billingModal.classList.contains("hidden")) closeBilling();
   if (event.key === "Escape" && !dashboardModal.classList.contains("hidden")) closeDashboard();
+  if (event.key === "Escape" && !settingsModal.classList.contains("hidden")) closeSettings();
+  if (event.key === "Escape" && !tiktokPublishModal.classList.contains("hidden")) closeTikTokPublish();
 });
 checkoutAgreement.addEventListener("change", () => {
   $("#checkoutButton").disabled = !billingState?.configured
@@ -2131,6 +2167,13 @@ checkoutAgreement.addEventListener("change", () => {
 cancelAgreement.addEventListener("change", () => {
   $("#cancelSubscriptionButton").disabled = billingState?.canManageBilling === false || !cancelAgreement.checked;
 });
+tiktokConsent.addEventListener("change", paintTikTokPublishButton);
+$("#tiktokPostMode").addEventListener("change", () => {
+  paintTikTokPublishMode();
+  paintTikTokPublishButton();
+});
+$("#tiktokPrivacy").addEventListener("change", paintTikTokPublishButton);
+$("#tiktokSubmitButton").addEventListener("click", submitTikTokPublish);
 $("#checkoutButton").addEventListener("click", async () => {
   if (!checkoutAgreement.checked) return;
   const activeUpgrade = Boolean(
@@ -2194,6 +2237,14 @@ function closeBilling() {
 function closeDashboard() {
   dashboardModal.classList.add("hidden");
   clearInterval(dashboardRefreshTimer);
+}
+
+function closeSettings() {
+  settingsModal.classList.add("hidden");
+}
+
+function closeTikTokPublish() {
+  tiktokPublishModal.classList.add("hidden");
 }
 
 async function openDashboard(options = {}) {
@@ -2583,6 +2634,262 @@ async function teamRequest(url, method, body = null) {
   return data;
 }
 
+async function openSettings() {
+  settingsModal.classList.remove("hidden");
+  $("#settingsError").classList.add("hidden");
+  $("#tiktokIntegrationBody").textContent = "Checking TikTok connection…";
+  $("#tiktokIntegrationActions").innerHTML = "";
+  await loadIntegrationsStatus();
+}
+
+async function loadIntegrationsStatus() {
+  try {
+    const response = await fetch("/api/integrations/status");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not load integrations.");
+    integrationsState = data;
+    renderTikTokIntegration(data.tiktok);
+  } catch (error) {
+    $("#settingsError").textContent = error.message || "Could not load integrations.";
+    $("#settingsError").classList.remove("hidden");
+  }
+}
+
+function renderTikTokIntegration(tiktok) {
+  const body = $("#tiktokIntegrationBody");
+  const actions = $("#tiktokIntegrationActions");
+  body.innerHTML = "";
+  actions.innerHTML = "";
+  if (!tiktok?.connected) {
+    body.innerHTML = `<span class="status-badge muted">Not connected</span><p>Use a real TikTok sandbox or creator account. KlipPharma stores tokens server-side and never in browser storage.</p>`;
+    const connect = document.createElement("button");
+    connect.className = "primary integration-primary";
+    connect.type = "button";
+    connect.textContent = "Connect TikTok →";
+    connect.addEventListener("click", () => {
+      window.location.assign("/api/integrations/tiktok/oauth/start?returnTo=%2F%3Fsettings%3Dintegrations");
+    });
+    actions.append(connect);
+    return;
+  }
+  const profile = tiktok.profile || {};
+  const avatar = profile.avatarUrl ? `<img src="${profile.avatarUrl}" alt="" />` : '<span class="avatar-fallback">♪</span>';
+  body.innerHTML = `
+    <span class="status-badge connected">Connected</span>
+    <div class="connected-profile">${avatar}<div><strong></strong><small></small></div></div>
+    <p class="scope-list"></p>
+  `;
+  body.querySelector("strong").textContent = profile.displayName || "TikTok creator";
+  body.querySelector("small").textContent = profile.openId || "Sandbox account authorized";
+  body.querySelector(".scope-list").textContent = `Scopes granted: ${tiktok.scopes?.length ? tiktok.scopes.join(", ") : "none reported"}`;
+  const reconnect = document.createElement("button");
+  reconnect.type = "button";
+  reconnect.className = "secondary";
+  reconnect.textContent = "Reconnect";
+  reconnect.addEventListener("click", () => {
+    window.location.assign("/api/integrations/tiktok/oauth/start?returnTo=%2F%3Fsettings%3Dintegrations");
+  });
+  const disconnect = document.createElement("button");
+  disconnect.type = "button";
+  disconnect.className = "danger-secondary";
+  disconnect.textContent = "Disconnect";
+  disconnect.addEventListener("click", disconnectTikTok);
+  actions.append(reconnect, disconnect);
+}
+
+async function disconnectTikTok() {
+  if (!confirm("Disconnect TikTok from KlipPharma?")) return;
+  const response = await fetch("/api/integrations/tiktok", { method: "DELETE" });
+  const data = await response.json();
+  if (!response.ok) return toast(data.error || "Could not disconnect TikTok.");
+  await loadIntegrationsStatus();
+  toast("TikTok disconnected.");
+}
+
+async function openTikTokPublish(target) {
+  tiktokPublishTarget = target;
+  tiktokCreatorInfo = null;
+  tiktokPublishModal.classList.remove("hidden");
+  $("#tiktokPublishError").classList.add("hidden");
+  $("#tiktokPublishStatus").classList.add("hidden");
+  $("#tiktokPublishTarget").textContent = `${target.targetType === "montage" ? "Auto-Mix" : "Klip"}: ${target.title}`;
+  $("#tiktokCaption").value = target.title || "";
+  $("#tiktokPostMode").innerHTML = "";
+  $("#tiktokPrivacy").innerHTML = '<option value="">Loading creator options…</option>';
+  tiktokConsent.checked = false;
+  ["#tiktokAllowComment", "#tiktokAllowDuet", "#tiktokAllowStitch", "#tiktokAiGenerated", "#tiktokBrandOrganic", "#tiktokBrandContent"]
+    .forEach((selector) => { $(selector).checked = false; $(selector).disabled = false; });
+  await loadIntegrationsStatus();
+  const tiktok = integrationsState?.tiktok;
+  if (!tiktok?.connected) {
+    $("#tiktokPublishConnection").innerHTML = 'TikTok is not connected. Open Settings > Integrations and authorize a sandbox account first.';
+    $("#tiktokSubmitButton").disabled = true;
+    return;
+  }
+  const scopes = tiktok.scopes || [];
+  const canUpload = hasTikTokScope("video.upload");
+  const canDirect = hasTikTokScope("video.publish");
+  renderTikTokModeOptions(scopes);
+  $("#tiktokPublishConnection").innerHTML = `Connected as <strong>${tiktok.profile?.displayName || "TikTok creator"}</strong>. Granted scopes: ${scopes.join(", ") || "none reported"}.`;
+  if (!canDirect) {
+    $("#tiktokPublishConnection").innerHTML += "<br><small>Direct Post requires the video.publish scope. Inbox Upload remains available when video.upload is granted.</small>";
+  }
+  if (!canUpload && !canDirect) {
+    $("#tiktokPublishConnection").innerHTML += "<br><small>This TikTok authorization cannot upload or publish video. Reconnect and approve video.upload or video.publish.</small>";
+  }
+  if (canDirect) await loadTikTokCreatorInfo();
+  else {
+    tiktokCreatorInfo = null;
+    renderTikTokPrivacyOptions([]);
+  }
+  paintTikTokPublishMode();
+  paintTikTokPublishButton();
+}
+
+function hasTikTokScope(scope) {
+  return (integrationsState?.tiktok?.scopes || []).includes(scope);
+}
+
+function renderTikTokModeOptions(scopes = []) {
+  const mode = $("#tiktokPostMode");
+  mode.innerHTML = "";
+  if (scopes.includes("video.upload")) {
+    mode.add(new Option("Upload to TikTok inbox", "inbox"));
+  }
+  if (scopes.includes("video.publish")) {
+    mode.add(new Option("Direct post", "direct"));
+  }
+  if (!mode.options.length) {
+    mode.add(new Option("Reconnect TikTok to upload", ""));
+  }
+  if (scopes.includes("video.upload")) mode.value = "inbox";
+  else if (scopes.includes("video.publish")) mode.value = "direct";
+  else mode.value = "";
+}
+
+async function loadTikTokCreatorInfo() {
+  try {
+    const response = await fetch("/api/integrations/tiktok/creator-info");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Direct Post creator options unavailable.");
+    tiktokCreatorInfo = data.creator || {};
+    renderTikTokPrivacyOptions(tiktokCreatorInfo.privacy_level_options || []);
+    $("#tiktokAllowComment").disabled = Boolean(tiktokCreatorInfo.comment_disabled);
+    $("#tiktokAllowDuet").disabled = Boolean(tiktokCreatorInfo.duet_disabled);
+    $("#tiktokAllowStitch").disabled = Boolean(tiktokCreatorInfo.stitch_disabled);
+  } catch (error) {
+    tiktokCreatorInfo = null;
+    renderTikTokPrivacyOptions(["SELF_ONLY"]);
+    if (hasTikTokScope("video.upload")) $("#tiktokPostMode").value = "inbox";
+    $("#tiktokPublishConnection").innerHTML += `<br><small>${error.message || "Direct Post creator options unavailable. Inbox upload remains available when video.upload is granted."}</small>`;
+  }
+}
+
+function renderTikTokPrivacyOptions(options) {
+  const privacy = $("#tiktokPrivacy");
+  privacy.innerHTML = '<option value="">Choose audience manually</option>';
+  options.forEach((value) => {
+    const label = {
+      PUBLIC_TO_EVERYONE: "Public to everyone",
+      MUTUAL_FOLLOW_FRIENDS: "Friends",
+      FOLLOWER_OF_CREATOR: "Followers",
+      SELF_ONLY: "Only me",
+    }[value] || value;
+    privacy.add(new Option(label, value));
+  });
+}
+
+function paintTikTokPublishMode() {
+  const requestedMode = $("#tiktokPostMode").value;
+  if (requestedMode === "direct" && !hasTikTokScope("video.publish")) {
+    $("#tiktokPostMode").value = hasTikTokScope("video.upload") ? "inbox" : "";
+  }
+  if (requestedMode === "inbox" && !hasTikTokScope("video.upload")) {
+    $("#tiktokPostMode").value = hasTikTokScope("video.publish") ? "direct" : "";
+  }
+  const direct = $("#tiktokPostMode").value === "direct";
+  $("#tiktokPrivacy").disabled = !direct;
+  ["#tiktokAllowComment", "#tiktokAllowDuet", "#tiktokAllowStitch", "#tiktokAiGenerated", "#tiktokBrandOrganic", "#tiktokBrandContent"]
+    .forEach((selector) => {
+      const control = $(selector);
+      control.closest("label").classList.toggle("muted-control", !direct);
+      control.disabled = !direct || (selector === "#tiktokAllowComment" && Boolean(tiktokCreatorInfo?.comment_disabled))
+        || (selector === "#tiktokAllowDuet" && Boolean(tiktokCreatorInfo?.duet_disabled))
+        || (selector === "#tiktokAllowStitch" && Boolean(tiktokCreatorInfo?.stitch_disabled));
+    });
+}
+
+function paintTikTokPublishButton() {
+  const direct = $("#tiktokPostMode").value === "direct";
+  const inbox = $("#tiktokPostMode").value === "inbox";
+  const hasConnection = integrationsState?.tiktok?.connected;
+  const canUseMode = (direct && hasTikTokScope("video.publish")) || (inbox && hasTikTokScope("video.upload"));
+  $("#tiktokSubmitButton").disabled = !hasConnection || !canUseMode || !tiktokConsent.checked || (direct && !$("#tiktokPrivacy").value);
+  $("#tiktokSubmitButton").textContent = direct ? "Publish to TikTok →" : "Upload to TikTok inbox →";
+}
+
+async function submitTikTokPublish() {
+  if (!tiktokPublishTarget) return;
+  const button = $("#tiktokSubmitButton");
+  const status = $("#tiktokPublishStatus");
+  const errorBox = $("#tiktokPublishError");
+  button.disabled = true;
+  button.textContent = "Sending to TikTok…";
+  errorBox.classList.add("hidden");
+  status.classList.remove("hidden");
+  status.textContent = "Uploading the rendered MP4 to TikTok. Keep this page open.";
+  try {
+    const mode = $("#tiktokPostMode").value;
+    if (mode === "direct" && !hasTikTokScope("video.publish")) throw new Error("Direct Post requires the video.publish scope. Reconnect TikTok and approve video.publish.");
+    if (mode === "inbox" && !hasTikTokScope("video.upload")) throw new Error("Inbox Upload requires the video.upload scope. Reconnect TikTok and approve video.upload.");
+    if (!mode) throw new Error("Reconnect TikTok with video.upload or video.publish before uploading.");
+    const response = await fetch("/api/integrations/tiktok/publish", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...tiktokPublishTarget,
+        mode,
+        caption: $("#tiktokCaption").value,
+        privacyLevel: $("#tiktokPrivacy").value,
+        allowComment: $("#tiktokAllowComment").checked,
+        allowDuet: $("#tiktokAllowDuet").checked,
+        allowStitch: $("#tiktokAllowStitch").checked,
+        isAiGenerated: $("#tiktokAiGenerated").checked,
+        brandOrganic: $("#tiktokBrandOrganic").checked,
+        brandContent: $("#tiktokBrandContent").checked,
+        tiktokConsentAccepted: tiktokConsent.checked,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "TikTok upload failed.");
+    status.innerHTML = `<strong>${data.message || "TikTok upload started."}</strong><small>Publish ID: ${data.publishId}</small><span id="tiktokLiveStatus">Checking status…</span>`;
+    pollTikTokPublishStatus(data.publishId);
+  } catch (error) {
+    errorBox.textContent = error.message || "TikTok upload failed.";
+    errorBox.classList.remove("hidden");
+    paintTikTokPublishButton();
+  }
+}
+
+async function pollTikTokPublishStatus(publishId) {
+  const live = $("#tiktokLiveStatus");
+  try {
+    const response = await fetch("/api/integrations/tiktok/publish/status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ publishId }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not check status.");
+    const tiktokStatus = data.status || {};
+    live.textContent = `TikTok status: ${tiktokStatus.status || "processing"}${tiktokStatus.fail_reason ? ` · ${tiktokStatus.fail_reason}` : ""}`;
+    const done = new Set(["PUBLISH_COMPLETE", "FAILED", "SEND_TO_USER_INBOX"]).has(tiktokStatus.status);
+    if (!done) setTimeout(() => pollTikTokPublishStatus(publishId), 5000);
+  } catch (error) {
+    live.textContent = error.message || "Could not check TikTok status.";
+  }
+}
+
 async function openBilling() {
   billingModal.classList.remove("hidden");
   $("#billingStatus").textContent = "Checking your subscription…";
@@ -2718,6 +3025,7 @@ async function bootstrapApplication() {
       loadBillingStatus();
       if (await acceptPendingInvitation()) return;
       await loadRecentProjects();
+      handleStartupParameters();
     } else {
       showAuthentication();
     }
@@ -2773,6 +3081,21 @@ function showAuthentication() {
   accountMenu.classList.add("hidden");
   authView.classList.remove("hidden");
   $("#authEmail").focus();
+}
+
+function handleStartupParameters() {
+  const url = new URL(window.location.href);
+  const shouldOpenSettings = url.searchParams.get("settings") === "integrations" || url.searchParams.has("tiktok");
+  if (!shouldOpenSettings) return;
+  const result = url.searchParams.get("tiktok");
+  const message = url.searchParams.get("message");
+  url.searchParams.delete("settings");
+  url.searchParams.delete("tiktok");
+  url.searchParams.delete("message");
+  history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  openSettings();
+  if (result === "connected") toast("TikTok connected. The reviewer can now see the connected state.");
+  if (result === "error") toast(message || "TikTok authorization failed.");
 }
 
 bootstrapApplication();

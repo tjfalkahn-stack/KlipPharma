@@ -19,10 +19,12 @@ import {
   createUser,
   createWorkspaceInvitation,
   deleteDatabaseProject,
+  deleteSocialConnection,
   deleteSession,
   acceptWorkspaceInvitation,
   findUserById,
   findSessionUser,
+  getSocialConnection,
   getWorkspaceContext,
   initializeDatabase,
   listWorkspaceInvitations,
@@ -34,6 +36,7 @@ import {
   revokeWorkspaceInvitation,
   saveDatabaseProject,
   setStripeCustomerId,
+  upsertSocialConnection,
   syncStripeSubscription,
   updateWorkspaceMemberRole,
   validateCredentials,
@@ -96,6 +99,8 @@ const previewTasks = new Map();
 const batchMontageTasks = new Map();
 const processingQueue = [];
 const authAttempts = new Map();
+const oauthStates = new Map();
+const localSocialConnections = new Map();
 const integrationAttempts = new Map();
 const maxConcurrentProjects = 2;
 const proFeaturesOpen = !new Set(["false", "0", "off", "no"])
@@ -778,6 +783,142 @@ app.delete("/api/team/members/:userId", requireUser, async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     res.status(error.status || 400).json({ error: error.message || "Could not remove that member." });
+  }
+});
+
+app.get("/api/integrations/status", requireUser, async (req, res) => {
+  const tiktok = await getTikTokConnectionForRequest(req);
+  res.json({
+    tiktok: tiktokConnectionForClient(tiktok),
+    youtube: {
+      connected: false,
+      provider: "youtube",
+      message: "YouTube imports are available from the upload workspace. Account publishing is not connected yet.",
+    },
+  });
+});
+
+app.get("/api/integrations/tiktok/oauth/start", requireUser, (req, res) => {
+  try {
+    const config = requireTikTokConfig();
+    const state = crypto.randomBytes(32).toString("base64url");
+    const returnTo = safeReturnTo(req.query.returnTo);
+    oauthStates.set(state, {
+      userId: req.user.id,
+      workspaceId: req.team?.id || null,
+      returnTo,
+      expiresAt: Date.now() + 10 * 60 * 1000,
+    });
+    res.cookie("klippharma_tiktok_oauth_state", state, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: appBaseUrl.startsWith("https://"),
+      maxAge: 10 * 60 * 1000,
+      path: "/",
+    });
+    const scope = normalizeTikTokScopes(process.env.TIKTOK_SCOPES || "user.info.basic,video.upload,video.publish");
+    const authorizeUrl = new URL("https://www.tiktok.com/v2/auth/authorize/");
+    authorizeUrl.searchParams.set("client_key", config.clientKey);
+    authorizeUrl.searchParams.set("scope", scope.join(","));
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("redirect_uri", config.redirectUri);
+    authorizeUrl.searchParams.set("state", state);
+    res.redirect(authorizeUrl.toString());
+  } catch (error) {
+    res.status(error.status || 503).send(error.message || "TikTok Login Kit is not configured.");
+  }
+});
+
+app.get("/api/integrations/tiktok/oauth/callback", requireUser, async (req, res) => {
+  const state = String(req.query.state || "");
+  const cookieState = readCookie(req, "klippharma_tiktok_oauth_state");
+  const stored = oauthStates.get(state);
+  oauthStates.delete(state);
+  res.clearCookie("klippharma_tiktok_oauth_state", { path: "/" });
+  const redirectBase = stored?.returnTo || "/?settings=integrations";
+  try {
+    if (!state || !cookieState || state !== cookieState || !stored || stored.expiresAt < Date.now() || stored.userId !== req.user.id) {
+      throw new AuthError("TikTok authorization expired. Start the connection again.", 400);
+    }
+    if (req.query.error) throw new AuthError(String(req.query.error_description || req.query.error), 400);
+    const code = String(req.query.code || "");
+    if (!code) throw new AuthError("TikTok did not return an authorization code.", 400);
+    const token = await exchangeTikTokCode(code);
+    const scopes = normalizeTikTokScopes(token.scope || "");
+    const profile = await fetchTikTokUserProfile(token.access_token).catch((error) => ({
+      error: error.message || "Profile could not be loaded yet.",
+    }));
+    await saveTikTokConnectionForRequest(req, {
+      providerUserId: profile.open_id || token.open_id || null,
+      profile,
+      scopes,
+      accessToken: token.access_token,
+      refreshToken: token.refresh_token || null,
+      accessTokenExpiresAt: secondsFromNow(token.expires_in),
+      refreshTokenExpiresAt: secondsFromNow(token.refresh_expires_in),
+    });
+    const done = new URL(redirectBase, appBaseUrl);
+    done.searchParams.set("tiktok", "connected");
+    res.redirect(done.toString());
+  } catch (error) {
+    const failed = new URL(redirectBase, appBaseUrl);
+    failed.searchParams.set("tiktok", "error");
+    failed.searchParams.set("message", error.message || "TikTok authorization failed.");
+    res.redirect(failed.toString());
+  }
+});
+
+app.delete("/api/integrations/tiktok", requireUser, async (req, res) => {
+  const connection = await getTikTokConnectionForRequest(req);
+  if (connection?.accessToken) await revokeTikTokToken(connection.accessToken).catch(() => {});
+  await deleteTikTokConnectionForRequest(req);
+  res.json({ ok: true });
+});
+
+app.get("/api/integrations/tiktok/creator-info", requireUser, async (req, res) => {
+  try {
+    const connection = await requireTikTokConnection(req, "video.publish");
+    const creator = await tiktokApi("/v2/post/publish/creator_info/query/", {
+      method: "POST",
+      token: connection.accessToken,
+    });
+    res.json({ creator: creator.data || null });
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message || "Could not load TikTok creator settings." });
+  }
+});
+
+app.post("/api/integrations/tiktok/publish", requireUser, requireWorkspaceEditor, async (req, res) => {
+  try {
+    const target = resolveTikTokPublishTarget(req);
+    const mode = normalizeTikTokPostMode(req.body?.mode);
+    const requiredScope = mode === "direct" ? "video.publish" : "video.upload";
+    const connection = await requireTikTokConnection(req, requiredScope);
+    const publish = await submitTikTokVideo({
+      accessToken: connection.accessToken,
+      target,
+      mode,
+      postInfo: req.body || {},
+    });
+    res.status(202).json(publish);
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message || "TikTok upload could not start." });
+  }
+});
+
+app.post("/api/integrations/tiktok/publish/status", requireUser, async (req, res) => {
+  try {
+    const connection = await requireTikTokConnection(req);
+    const publishId = String(req.body?.publishId || "").trim();
+    if (!publishId || publishId.length > 128) return res.status(400).json({ error: "TikTok publish id is required." });
+    const status = await tiktokApi("/v2/post/publish/status/fetch/", {
+      method: "POST",
+      token: connection.accessToken,
+      body: { publish_id: publishId },
+    });
+    res.json({ publishId, status: status.data || null });
+  } catch (error) {
+    res.status(error.status || 400).json({ error: error.message || "Could not check TikTok status." });
   }
 });
 
@@ -3621,6 +3762,266 @@ function assTime(seconds) {
   const s = Math.floor((centiseconds % 6000) / 100);
   const cs = centiseconds % 100;
   return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
+}
+
+function requireTikTokConfig() {
+  const clientKey = String(process.env.TIKTOK_CLIENT_KEY || "").trim();
+  const clientSecret = String(process.env.TIKTOK_CLIENT_SECRET || "").trim();
+  const redirectUri = String(process.env.TIKTOK_REDIRECT_URI || `${appBaseUrl}/api/integrations/tiktok/oauth/callback`).trim();
+  if (!clientKey || !clientSecret || !redirectUri) {
+    throw new AuthError("TikTok Login Kit needs TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET, and TIKTOK_REDIRECT_URI.", 503);
+  }
+  return { clientKey, clientSecret, redirectUri };
+}
+
+function normalizeTikTokScopes(value) {
+  const raw = Array.isArray(value) ? value : String(value || "").split(/[,\s]+/);
+  return [...new Set(raw.map((scope) => String(scope || "").trim()).filter(Boolean))];
+}
+
+async function exchangeTikTokCode(code) {
+  const config = requireTikTokConfig();
+  const body = new URLSearchParams({
+    client_key: config.clientKey,
+    client_secret: config.clientSecret,
+    code,
+    grant_type: "authorization_code",
+    redirect_uri: config.redirectUri,
+  });
+  const response = await fetch("https://open.tiktokapis.com/v2/oauth/token/", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error) {
+    throw new AuthError(data.error_description || data.message || data.error || "TikTok token exchange failed.", response.status || 400);
+  }
+  return data;
+}
+
+async function revokeTikTokToken(accessToken) {
+  const config = requireTikTokConfig();
+  const body = new URLSearchParams({
+    client_key: config.clientKey,
+    client_secret: config.clientSecret,
+    token: accessToken,
+  });
+  await fetch("https://open.tiktokapis.com/v2/oauth/revoke/", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+}
+
+async function fetchTikTokUserProfile(accessToken) {
+  const data = await tiktokApi("/v2/user/info/?fields=open_id,avatar_url,avatar_url_100,display_name", {
+    method: "GET",
+    token: accessToken,
+  });
+  return data.data?.user || {};
+}
+
+async function tiktokApi(pathname, { method = "GET", token, body = null } = {}) {
+  const response = await fetch(`https://open.tiktokapis.com${pathname}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(method !== "GET" ? { "Content-Type": "application/json; charset=UTF-8" } : {}),
+    },
+    body: method !== "GET" ? JSON.stringify(body || {}) : undefined,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || (data.error && data.error.code && data.error.code !== "ok")) {
+    const message = data.error?.message || data.message || data.error?.code || "TikTok API request failed.";
+    throw new AuthError(message, response.status || 400);
+  }
+  return data;
+}
+
+function secondsFromNow(value) {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds > 0 ? new Date(Date.now() + seconds * 1000).toISOString() : null;
+}
+
+function socialKey(req) {
+  return `${req.user.id}:tiktok`;
+}
+
+async function getTikTokConnectionForRequest(req) {
+  if (req.user.id === "local-owner") return localSocialConnections.get(socialKey(req)) || null;
+  return getSocialConnection(req.user.id, "tiktok");
+}
+
+async function saveTikTokConnectionForRequest(req, connection) {
+  if (req.user.id === "local-owner") {
+    const stored = {
+      userId: req.user.id,
+      provider: "tiktok",
+      workspaceId: req.team?.id || null,
+      ...connection,
+      scopes: normalizeTikTokScopes(connection.scopes),
+      connectedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    localSocialConnections.set(socialKey(req), stored);
+    return stored;
+  }
+  return upsertSocialConnection({
+    userId: req.user.id,
+    provider: "tiktok",
+    workspaceId: req.team?.id || null,
+    ...connection,
+  });
+}
+
+async function deleteTikTokConnectionForRequest(req) {
+  if (req.user.id === "local-owner") return localSocialConnections.delete(socialKey(req));
+  return deleteSocialConnection(req.user.id, "tiktok");
+}
+
+async function requireTikTokConnection(req, scope = null) {
+  const connection = await getTikTokConnectionForRequest(req);
+  if (!connection?.accessToken) throw new AuthError("Connect TikTok in Settings > Integrations first.", 409);
+  if (scope && !normalizeTikTokScopes(connection.scopes).includes(scope)) {
+    throw new AuthError(`Reconnect TikTok and approve the ${scope} permission to use this action.`, 403);
+  }
+  return connection;
+}
+
+function tiktokConnectionForClient(connection) {
+  if (!connection) {
+    return {
+      connected: false,
+      configured: Boolean(process.env.TIKTOK_CLIENT_KEY && process.env.TIKTOK_CLIENT_SECRET),
+      scopes: [],
+    };
+  }
+  const profile = connection.profile || {};
+  return {
+    connected: true,
+    configured: true,
+    provider: "tiktok",
+    profile: {
+      displayName: profile.display_name || "TikTok creator",
+      avatarUrl: profile.avatar_url_100 || profile.avatar_url || null,
+      openId: profile.open_id || connection.providerUserId || null,
+    },
+    scopes: normalizeTikTokScopes(connection.scopes),
+    connectedAt: connection.connectedAt || connection.connected_at || null,
+    updatedAt: connection.updatedAt || connection.updated_at || null,
+  };
+}
+
+function safeReturnTo(value) {
+  const raw = String(value || "/?settings=integrations").trim();
+  if (!raw.startsWith("/") || raw.startsWith("//")) return "/?settings=integrations";
+  return raw.slice(0, 500);
+}
+
+function normalizeTikTokPostMode(value) {
+  return String(value || "inbox").trim().toLowerCase() === "direct" ? "direct" : "inbox";
+}
+
+function resolveTikTokPublishTarget(req) {
+  const project = ownedJob(req, req.body?.projectId);
+  if (!project) throw new AuthError("Project not found.", 404);
+  const type = String(req.body?.targetType || "clip").toLowerCase();
+  if (type === "montage") {
+    if (project.montage?.status !== "ready" || !project.montage.downloadUrl) {
+      throw new AuthError("Build the Auto-Mix MP4 before sending it to TikTok.", 409);
+    }
+    const outputPath = path.join(exportDir, `${project.batchId || project.id}-automix.mp4`);
+    if (!fs.existsSync(outputPath)) throw new AuthError("The rendered Auto-Mix MP4 is no longer available.", 404);
+    return {
+      type,
+      title: project.montage.title || "KlipPharma Auto-Mix",
+      path: outputPath,
+      mimeType: "video/mp4",
+    };
+  }
+  const clip = project.clips?.find((item) => item.id === req.body?.clipId);
+  if (!clip) throw new AuthError("Clip not found.", 404);
+  if (clip.renderStatus !== "ready" || !clip.downloadUrl) {
+    throw new AuthError("Build the exact final preview before sending this klip to TikTok.", 409);
+  }
+  const outputPath = path.join(exportDir, `${project.id}-${clip.id}.mp4`);
+  if (!fs.existsSync(outputPath)) throw new AuthError("The rendered MP4 is no longer available.", 404);
+  return {
+    type,
+    title: clip.title || "KlipPharma klip",
+    path: outputPath,
+    mimeType: "video/mp4",
+  };
+}
+
+async function submitTikTokVideo({ accessToken, target, mode, postInfo }) {
+  const stats = fs.statSync(target.path);
+  const sourceInfo = {
+    source: "FILE_UPLOAD",
+    video_size: stats.size,
+    chunk_size: stats.size,
+    total_chunk_count: 1,
+  };
+  const body = mode === "direct"
+    ? {
+      post_info: normalizeTikTokDirectPostInfo(postInfo),
+      source_info: sourceInfo,
+    }
+    : { source_info: sourceInfo };
+  const endpoint = mode === "direct" ? "/v2/post/publish/video/init/" : "/v2/post/publish/inbox/video/init/";
+  const init = await tiktokApi(endpoint, { method: "POST", token: accessToken, body });
+  const publishId = init.data?.publish_id;
+  const uploadUrl = init.data?.upload_url;
+  if (!publishId || !uploadUrl) throw new AuthError("TikTok did not return an upload target.", 502);
+  await uploadTikTokFile(uploadUrl, target.path, stats.size, target.mimeType);
+  return {
+    ok: true,
+    provider: "tiktok",
+    mode,
+    publishId,
+    status: mode === "direct" ? "PROCESSING_UPLOAD" : "SEND_TO_USER_INBOX",
+    message: mode === "direct"
+      ? "TikTok is processing the upload. Status will update here."
+      : "TikTok received the video. The creator can finish the post from their TikTok inbox notification.",
+  };
+}
+
+function normalizeTikTokDirectPostInfo(body) {
+  const privacyLevel = String(body.privacyLevel || "").trim();
+  if (!privacyLevel) throw new AuthError("Choose a TikTok audience before publishing.", 400);
+  const allowed = new Set(["PUBLIC_TO_EVERYONE", "MUTUAL_FOLLOW_FRIENDS", "FOLLOWER_OF_CREATOR", "SELF_ONLY"]);
+  if (!allowed.has(privacyLevel)) throw new AuthError("Choose a valid TikTok audience option.", 400);
+  if (body.tiktokConsentAccepted !== true) {
+    throw new AuthError("Confirm TikTok's posting and Music Usage terms before publishing.", 400);
+  }
+  return {
+    title: String(body.caption || "").slice(0, 2200),
+    privacy_level: privacyLevel,
+    disable_duet: body.allowDuet !== true,
+    disable_stitch: body.allowStitch !== true,
+    disable_comment: body.allowComment !== true,
+    brand_content_toggle: body.brandContent === true,
+    brand_organic_toggle: body.brandOrganic === true,
+    is_aigc: body.isAiGenerated === true,
+  };
+}
+
+async function uploadTikTokFile(uploadUrl, filePath, size, mimeType) {
+  const response = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: {
+      "Content-Type": mimeType || "video/mp4",
+      "Content-Length": String(size),
+      "Content-Range": `bytes 0-${size - 1}/${size}`,
+    },
+    body: fs.createReadStream(filePath),
+    duplex: "half",
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new AuthError(detail || `TikTok upload failed with HTTP ${response.status}.`, response.status || 502);
+  }
 }
 
 app.use((error, _req, res, next) => {

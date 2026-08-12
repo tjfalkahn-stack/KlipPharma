@@ -57,6 +57,7 @@ let selectedBillingPlanKey = "creator_monthly";
 let integrationsState = null;
 let tiktokPublishTarget = null;
 let tiktokCreatorInfo = null;
+let currentDashboardProjects = [];
 const paidPlanTiers = new Set(["paid", "pro", "creator", "studio", "business"]);
 const creatorModeCopy = {
   auto: ["Smart Detect", "Balanced selection for mixed or general content."],
@@ -2250,6 +2251,7 @@ function closeTikTokPublish() {
 async function openDashboard(options = {}) {
   dashboardModal.classList.remove("hidden");
   $("#dashboardHistory").innerHTML = '<div class="dashboard-empty">Loading your account history…</div>';
+  $("#dashboardPublishingDestinations").innerHTML = '<div class="dashboard-empty">Checking publishing destinations…</div>';
   $("#incomingList").innerHTML = '<div class="dashboard-empty">Loading incoming projects…</div>';
   $("#dashboardError").classList.add("hidden");
   await loadDashboardData(options);
@@ -2261,10 +2263,16 @@ async function openDashboard(options = {}) {
 
 async function loadDashboardData(options = {}) {
   try {
-    const response = await fetch("/api/account/dashboard");
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Could not load your dashboard.");
-    renderDashboard(data);
+    const [dashboardResponse, integrationsResponse] = await Promise.all([
+      fetch("/api/account/dashboard"),
+      fetch("/api/integrations/status"),
+    ]);
+    const data = await dashboardResponse.json();
+    if (!dashboardResponse.ok) throw new Error(data.error || "Could not load your dashboard.");
+    const integrations = await integrationsResponse.json().catch(() => ({}));
+    if (!integrationsResponse.ok) integrations.tiktok = { connected: false, error: integrations.error || "Could not load integrations." };
+    integrationsState = integrations;
+    renderDashboard(data, integrations);
     try {
       await loadIncomingKlipdoseData();
     } catch (incomingError) {
@@ -2302,11 +2310,12 @@ async function loadIncomingKlipdoseData() {
   });
 }
 
-function renderDashboard(data) {
+function renderDashboard(data, integrations = integrationsState || {}) {
   const user = data.user || currentUser || {};
   const subscription = data.subscription || {};
   const stats = data.stats || {};
   const projects = data.projects || [];
+  currentDashboardProjects = projects;
   $("#dashboardEmail").textContent = user.email || "Local owner";
   $("#dashboardMemberSince").textContent = user.createdAt
     ? `Member since ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(user.createdAt))}`
@@ -2321,6 +2330,7 @@ function renderDashboard(data) {
   $("#dashboardUploads").textContent = stats.uploads || 0;
   $("#dashboardClips").textContent = stats.clips || 0;
   $("#dashboardCompleted").textContent = stats.completed || 0;
+  renderDashboardPublishing(integrations.tiktok, projects);
   const tier = String(subscription.planTier || user.planTier || "free").toLowerCase();
   $("#dashboardUpgrade").classList.toggle("hidden", tier === "business");
   $("#dashboardUpgradeTitle").textContent = new Set(["pro", "studio"]).has(tier)
@@ -2361,6 +2371,146 @@ function renderDashboard(data) {
     row.append(name, detail, open);
     history.append(row);
   });
+}
+
+function renderDashboardPublishing(tiktok, projects = []) {
+  const root = $("#dashboardPublishingDestinations");
+  root.innerHTML = "";
+  const card = document.createElement("article");
+  card.className = "dashboard-destination-card";
+  const connected = Boolean(tiktok?.connected);
+  const scopes = tiktok?.scopes || [];
+  const canDirect = scopes.includes("video.publish");
+  const canInbox = scopes.includes("video.upload");
+  const readyProject = projects.find((project) => project.status === "ready");
+  const profile = tiktok?.profile || {};
+
+  const head = document.createElement("div");
+  head.className = "dashboard-destination-head";
+  const icon = document.createElement("span");
+  icon.className = "integration-logo tiktok-logo";
+  icon.textContent = "♪";
+  const title = document.createElement("div");
+  title.innerHTML = `<h4>TikTok</h4><span class="status-badge ${connected ? "connected" : "muted"}"></span>`;
+  title.querySelector(".status-badge").textContent = connected ? "Connected" : "Not connected";
+  head.append(icon, title);
+  card.append(head);
+
+  if (!connected) {
+    const empty = document.createElement("p");
+    empty.textContent = "Connect TikTok to show creator profile details and publishing readiness on your dashboard.";
+    const actions = document.createElement("div");
+    actions.className = "dashboard-destination-actions";
+    const connect = dashboardAction("Connect TikTok", () => {
+      closeDashboard();
+      openSettings();
+    }, "primary");
+    actions.append(connect);
+    card.append(empty, actions);
+    root.append(card);
+    return;
+  }
+
+  const account = document.createElement("div");
+  account.className = "dashboard-destination-account";
+  const avatar = document.createElement("div");
+  avatar.className = "dashboard-destination-avatar";
+  if (profile.avatarUrl) {
+    const image = document.createElement("img");
+    image.src = profile.avatarUrl;
+    image.alt = "";
+    avatar.append(image);
+  } else {
+    avatar.textContent = "♪";
+  }
+  const copy = document.createElement("div");
+  copy.className = "dashboard-destination-copy";
+  const name = document.createElement("strong");
+  name.textContent = profile.displayName || "TikTok creator";
+  const username = document.createElement("small");
+  username.textContent = profile.username ? `@${profile.username}` : "Creator account connected";
+  copy.append(name, username);
+  if (profile.bio) {
+    const bio = document.createElement("p");
+    bio.textContent = profile.bio;
+    copy.append(bio);
+  }
+  account.append(avatar, copy);
+  card.append(account);
+
+  const readiness = document.createElement("div");
+  readiness.className = "dashboard-readiness";
+  if (canDirect) readiness.append(readinessBadge("Direct Post ready"));
+  if (canInbox) readiness.append(readinessBadge("Inbox Upload ready"));
+  if (!canDirect && !canInbox) readiness.append(readinessBadge("Reconnect to enable publishing", true));
+  card.append(readiness);
+
+  const actions = document.createElement("div");
+  actions.className = "dashboard-destination-actions";
+  actions.append(dashboardAction("Manage Integration", () => {
+    closeDashboard();
+    openSettings();
+  }));
+  if (profile.profileUrl) {
+    actions.append(dashboardAction("View TikTok Profile", () => window.open(profile.profileUrl, "_blank", "noopener,noreferrer")));
+  }
+  const publish = dashboardAction(readyProject ? "Publish to TikTok" : "Create a clip to publish", () => {
+    if (!readyProject) {
+      closeDashboard();
+      toast("Create and render a klip before publishing to TikTok.");
+      return;
+    }
+    publishReadyDashboardProjectToTikTok(readyProject.id);
+  }, readyProject ? "primary" : "");
+  actions.append(publish);
+  card.append(actions);
+  root.append(card);
+}
+
+function dashboardAction(label, handler, variant = "") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  if (variant) button.className = variant;
+  button.addEventListener("click", handler);
+  return button;
+}
+
+function readinessBadge(label, muted = false) {
+  const badge = document.createElement("span");
+  badge.className = `readiness-badge${muted ? " muted" : ""}`;
+  badge.textContent = label;
+  return badge;
+}
+
+async function publishReadyDashboardProjectToTikTok(projectId) {
+  try {
+    const response = await fetch(`/api/projects/${projectId}`);
+    const project = await response.json();
+    if (!response.ok) throw new Error(project.error || "Could not open this project.");
+    const montage = project.montage?.status === "ready" && project.montage.downloadUrl
+      ? {
+        targetType: "montage",
+        projectId: project.id,
+        title: project.montage.title || "KlipPharma Auto-Mix",
+      }
+      : null;
+    const clip = (project.clips || []).find((item) => item.renderStatus === "ready" && item.downloadUrl);
+    const target = montage || (clip ? {
+      targetType: "clip",
+      projectId: project.id,
+      clipId: clip.id,
+      title: clip.title || "KlipPharma klip",
+    } : null);
+    if (!target) {
+      toast("Render a final MP4 preview before publishing to TikTok.");
+      return;
+    }
+    closeDashboard();
+    openTikTokPublish(target);
+  } catch (error) {
+    toast(error.message || "Could not prepare TikTok publishing.");
+  }
 }
 
 function renderIncomingKlipdose(projects, stats) {
@@ -2649,6 +2799,7 @@ async function loadIntegrationsStatus() {
     if (!response.ok) throw new Error(data.error || "Could not load integrations.");
     integrationsState = data;
     renderTikTokIntegration(data.tiktok);
+    if (!dashboardModal.classList.contains("hidden")) renderDashboardPublishing(data.tiktok, currentDashboardProjects);
   } catch (error) {
     $("#settingsError").textContent = error.message || "Could not load integrations.";
     $("#settingsError").classList.remove("hidden");

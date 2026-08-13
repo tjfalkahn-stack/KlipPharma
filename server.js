@@ -4099,8 +4099,9 @@ async function fetchRecentYouTubeVideos(accessToken, uploadsPlaylistId) {
   const ids = (playlist.items || []).map((item) => item.contentDetails?.videoId).filter(Boolean);
   if (!ids.length) return { videos: [] };
   const videos = await youtubeApi(`/youtube/v3/videos?part=snippet,contentDetails,statistics,status&id=${encodeURIComponent(ids.join(","))}`, { token: accessToken });
+  const byId = new Map((videos.items || []).map((video) => [video.id, video]));
   return {
-    videos: (videos.items || []).map(youtubeVideoForClient),
+    videos: ids.map((id) => byId.get(id)).filter(Boolean).map(youtubeVideoForClient),
     nextPageToken: playlist.nextPageToken || null,
   };
 }

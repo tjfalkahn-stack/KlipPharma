@@ -2967,7 +2967,7 @@ function renderTikTokIntegration(tiktok) {
   body.innerHTML = "";
   actions.innerHTML = "";
   if (!tiktok?.connected) {
-    body.innerHTML = `<span class="status-badge muted">Not connected</span><p>Use a real TikTok sandbox or creator account. KlipPharma stores tokens server-side and never in browser storage.</p>`;
+    body.innerHTML = `<span class="status-badge muted">Not connected</span><p>Connect a TikTok creator account. KlipPharma stores tokens server-side and never in browser storage.</p>`;
     const connect = document.createElement("button");
     connect.className = "primary integration-primary";
     connect.type = "button";
@@ -2983,6 +2983,8 @@ function renderTikTokIntegration(tiktok) {
   const hasProfile = scopes.includes("user.info.profile");
   const hasStats = scopes.includes("user.info.stats");
   const hasVideos = scopes.includes("video.list");
+  const canDirect = scopes.includes("video.publish");
+  const canInbox = scopes.includes("video.upload");
   body.innerHTML = `
     <span class="status-badge connected">Connected</span>
     <div class="connected-profile tiktok-profile-card">
@@ -2995,6 +2997,7 @@ function renderTikTokIntegration(tiktok) {
         <small class="tiktok-open-id"></small>
       </div>
     </div>
+    <div class="dashboard-readiness integration-readiness"></div>
     <div class="tiktok-stats-row hidden"></div>
     <div class="recent-tiktok-videos hidden">
       <div class="section-mini-head"><strong>Recent TikTok Videos</strong><small></small></div>
@@ -3031,6 +3034,11 @@ function renderTikTokIntegration(tiktok) {
   const openId = body.querySelector(".tiktok-open-id");
   if (!profile.username && profile.openId) openId.textContent = `Internal TikTok ID: ${profile.openId}`;
   else openId.classList.add("hidden");
+  const readiness = body.querySelector(".integration-readiness");
+  if (canDirect) readiness.append(readinessBadge("Direct Post ready"));
+  else readiness.append(readinessBadge("Direct Post unavailable", true));
+  if (canInbox) readiness.append(readinessBadge("Inbox Upload ready"));
+  else readiness.append(readinessBadge("Inbox Upload unavailable", true));
   if (hasStats && tiktok.stats) {
     const stats = body.querySelector(".tiktok-stats-row");
     stats.classList.remove("hidden");
@@ -3084,6 +3092,7 @@ function renderYouTubeIntegration(youtube) {
   }
   const channel = youtube.channel || {};
   const scopes = youtube.scopes || [];
+  const canUpload = scopes.includes("https://www.googleapis.com/auth/youtube.upload");
   body.innerHTML = `
     <span class="status-badge connected">Connected</span>
     <div class="connected-profile tiktok-profile-card youtube-profile-card">
@@ -3095,6 +3104,7 @@ function renderYouTubeIntegration(youtube) {
         <a class="tiktok-profile-link hidden" target="_blank" rel="noopener noreferrer">View YouTube Channel</a>
       </div>
     </div>
+    <div class="dashboard-readiness integration-readiness"></div>
     <div class="tiktok-stats-row youtube-stats-row"></div>
     <div class="recent-tiktok-videos recent-youtube-videos">
       <div class="section-mini-head"><strong>Recent YouTube Videos</strong><small></small></div>
@@ -3123,6 +3133,9 @@ function renderYouTubeIntegration(youtube) {
     link.href = channel.channelUrl;
     link.classList.remove("hidden");
   }
+  const readiness = body.querySelector(".integration-readiness");
+  if (canUpload) readiness.append(readinessBadge("Upload ready"));
+  else readiness.append(readinessBadge("Upload unavailable", true));
   const stats = body.querySelector(".youtube-stats-row");
   [
     ["Subscribers", youtube.stats?.hiddenSubscribers ? "Hidden" : formatTikTokCount(youtube.stats?.subscribers)],
@@ -3266,7 +3279,7 @@ function renderTikTokVideos(videos) {
   if (!list) return;
   list.innerHTML = "";
   if (!videos.length) {
-    list.innerHTML = "<p>No public TikTok videos were returned for this sandbox account.</p>";
+    list.innerHTML = "<p>No public TikTok videos were returned for this account.</p>";
     return;
   }
   videos.forEach((video) => {
@@ -3357,7 +3370,7 @@ async function openTikTokPublish(target) {
   await loadIntegrationsStatus();
   const tiktok = integrationsState?.tiktok;
   if (!tiktok?.connected) {
-    $("#tiktokPublishConnection").innerHTML = 'TikTok is not connected. Open Settings > Integrations and authorize a sandbox account first.';
+    $("#tiktokPublishConnection").innerHTML = 'TikTok is not connected. Open Settings > Integrations and authorize a creator account first.';
     $("#tiktokSubmitButton").disabled = true;
     return;
   }
@@ -3851,7 +3864,7 @@ function handleStartupParameters() {
   url.searchParams.delete("message");
   history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
   openSettings();
-  if (tiktokResult === "connected") toast("TikTok connected. The reviewer can now see the connected state.");
+  if (tiktokResult === "connected") toast("TikTok connected. Publishing is ready when upload scopes are granted.");
   if (tiktokResult === "error") toast(message || "TikTok authorization failed.");
   if (youtubeResult === "connected") toast("YouTube connected. Channel details and upload readiness are visible now.");
   if (youtubeResult === "error") toast(message || "YouTube authorization failed.");

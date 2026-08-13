@@ -17,9 +17,11 @@ const billingModal = $("#billingModal");
 const dashboardModal = $("#dashboardModal");
 const settingsModal = $("#settingsModal");
 const tiktokPublishModal = $("#tiktokPublishModal");
+const youtubePublishModal = $("#youtubePublishModal");
 const checkoutAgreement = $("#checkoutAgreement");
 const cancelAgreement = $("#cancelAgreement");
 const tiktokConsent = $("#tiktokConsent");
+const youtubeConsent = $("#youtubeConsent");
 const videoInput = $("#video");
 const dropzone = $("#dropzone");
 const youtubeUrl = $("#youtubeUrl");
@@ -57,6 +59,7 @@ let selectedBillingPlanKey = "creator_monthly";
 let integrationsState = null;
 let tiktokPublishTarget = null;
 let tiktokCreatorInfo = null;
+let youtubePublishTarget = null;
 let currentDashboardProjects = [];
 const paidPlanTiers = new Set(["paid", "pro", "creator", "studio", "business"]);
 const creatorModeCopy = {
@@ -569,12 +572,21 @@ function renderMontage(projects) {
       projectId: owner.id,
       title: montage.title || "KlipPharma Auto-Mix",
     }));
+    const youtube = document.createElement("button");
+    youtube.type = "button";
+    youtube.className = "automix-youtube";
+    youtube.textContent = "Send to YouTube";
+    youtube.addEventListener("click", () => openYouTubePublish({
+      targetType: "montage",
+      projectId: owner.id,
+      title: montage.title || "KlipPharma Auto-Mix",
+    }));
     const deleteOutput = document.createElement("button");
     deleteOutput.type = "button";
     deleteOutput.className = "automix-delete";
     deleteOutput.textContent = "Delete Auto-Mix MP4";
     deleteOutput.addEventListener("click", () => deleteMontageExport(owner, deleteOutput));
-    actions.append(badge, review, download, tiktok, deleteOutput);
+    actions.append(badge, review, download, tiktok, youtube, deleteOutput);
     section.append(player, actions);
     const editor = buildMontageEditor(owner, projects, montage, player, review);
     section.append(editor);
@@ -1037,6 +1049,7 @@ function renderProjectClips(project, grid) {
     const renderButton = node.querySelector(".render");
     const download = node.querySelector(".download");
     const tiktokExport = node.querySelector(".tiktok-export");
+    const youtubeExport = node.querySelector(".youtube-export");
     const deleteExport = node.querySelector(".delete-export");
     const finalPreview = node.querySelector(".final-render-preview");
     const finalPreviewVideo = node.querySelector(".final-render-video");
@@ -1045,6 +1058,7 @@ function renderProjectClips(project, grid) {
       download.href = clip.downloadUrl;
       download.classList.remove("hidden");
       tiktokExport.classList.remove("hidden");
+      youtubeExport.classList.remove("hidden");
       deleteExport.classList.remove("hidden");
       finalPreviewVideo.src = clip.downloadUrl;
       finalPreview.classList.remove("hidden");
@@ -1058,6 +1072,12 @@ function renderProjectClips(project, grid) {
       }
     });
     tiktokExport.addEventListener("click", () => openTikTokPublish({
+      targetType: "clip",
+      projectId: project.id,
+      clipId: clip.id,
+      title: clip.title || "KlipPharma klip",
+    }));
+    youtubeExport.addEventListener("click", () => openYouTubePublish({
       targetType: "clip",
       projectId: project.id,
       clipId: clip.id,
@@ -1271,6 +1291,7 @@ async function deleteClipExport(project, clip, card, button) {
   delete clip.downloadUrl;
   card.querySelector(".download").classList.add("hidden");
   card.querySelector(".tiktok-export").classList.add("hidden");
+  card.querySelector(".youtube-export").classList.add("hidden");
   const finalPreview = card.querySelector(".final-render-preview");
   const finalPreviewVideo = card.querySelector(".final-render-video");
   finalPreview.classList.add("hidden");
@@ -2033,6 +2054,7 @@ function requestCompatiblePreview(project) {
       link.href = clip.downloadUrl;
       link.classList.remove("hidden");
       card.querySelector(".tiktok-export").classList.remove("hidden");
+      card.querySelector(".youtube-export").classList.remove("hidden");
       const finalPreview = card.querySelector(".final-render-preview");
       const finalPreviewVideo = card.querySelector(".final-render-video");
       finalPreviewVideo.src = clip.downloadUrl;
@@ -2142,6 +2164,7 @@ $("#billingClose").addEventListener("click", closeBilling);
 $("#dashboardClose").addEventListener("click", closeDashboard);
 $("#settingsClose").addEventListener("click", closeSettings);
 $("#tiktokPublishClose").addEventListener("click", closeTikTokPublish);
+$("#youtubePublishClose").addEventListener("click", closeYouTubePublish);
 billingModal.addEventListener("click", (event) => {
   if (event.target === billingModal) closeBilling();
 });
@@ -2154,11 +2177,15 @@ settingsModal.addEventListener("click", (event) => {
 tiktokPublishModal.addEventListener("click", (event) => {
   if (event.target === tiktokPublishModal) closeTikTokPublish();
 });
+youtubePublishModal.addEventListener("click", (event) => {
+  if (event.target === youtubePublishModal) closeYouTubePublish();
+});
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !billingModal.classList.contains("hidden")) closeBilling();
   if (event.key === "Escape" && !dashboardModal.classList.contains("hidden")) closeDashboard();
   if (event.key === "Escape" && !settingsModal.classList.contains("hidden")) closeSettings();
   if (event.key === "Escape" && !tiktokPublishModal.classList.contains("hidden")) closeTikTokPublish();
+  if (event.key === "Escape" && !youtubePublishModal.classList.contains("hidden")) closeYouTubePublish();
 });
 checkoutAgreement.addEventListener("change", () => {
   $("#checkoutButton").disabled = !billingState?.configured
@@ -2175,6 +2202,9 @@ $("#tiktokPostMode").addEventListener("change", () => {
 });
 $("#tiktokPrivacy").addEventListener("change", paintTikTokPublishButton);
 $("#tiktokSubmitButton").addEventListener("click", submitTikTokPublish);
+youtubeConsent.addEventListener("change", paintYouTubePublishButton);
+$("#youtubeTitle").addEventListener("input", paintYouTubePublishButton);
+$("#youtubeSubmitButton").addEventListener("click", submitYouTubePublish);
 $("#checkoutButton").addEventListener("click", async () => {
   if (!checkoutAgreement.checked) return;
   const activeUpgrade = Boolean(
@@ -2248,6 +2278,10 @@ function closeTikTokPublish() {
   tiktokPublishModal.classList.add("hidden");
 }
 
+function closeYouTubePublish() {
+  youtubePublishModal.classList.add("hidden");
+}
+
 async function openDashboard(options = {}) {
   dashboardModal.classList.remove("hidden");
   $("#dashboardHistory").innerHTML = '<div class="dashboard-empty">Loading your account history…</div>';
@@ -2270,7 +2304,11 @@ async function loadDashboardData(options = {}) {
     const data = await dashboardResponse.json();
     if (!dashboardResponse.ok) throw new Error(data.error || "Could not load your dashboard.");
     const integrations = await integrationsResponse.json().catch(() => ({}));
-    if (!integrationsResponse.ok) integrations.tiktok = { connected: false, error: integrations.error || "Could not load integrations." };
+    if (!integrationsResponse.ok) {
+      const error = integrations.error || "Could not load integrations.";
+      integrations.tiktok = { connected: false, error };
+      integrations.youtube = { connected: false, error };
+    }
     integrationsState = integrations;
     renderDashboard(data, integrations);
     try {
@@ -2330,7 +2368,7 @@ function renderDashboard(data, integrations = integrationsState || {}) {
   $("#dashboardUploads").textContent = stats.uploads || 0;
   $("#dashboardClips").textContent = stats.clips || 0;
   $("#dashboardCompleted").textContent = stats.completed || 0;
-  renderDashboardPublishing(integrations.tiktok, projects);
+  renderDashboardPublishing(integrations, projects);
   const tier = String(subscription.planTier || user.planTier || "free").toLowerCase();
   $("#dashboardUpgrade").classList.toggle("hidden", tier === "business");
   $("#dashboardUpgradeTitle").textContent = new Set(["pro", "studio"]).has(tier)
@@ -2373,9 +2411,14 @@ function renderDashboard(data, integrations = integrationsState || {}) {
   });
 }
 
-function renderDashboardPublishing(tiktok, projects = []) {
+function renderDashboardPublishing(integrations = integrationsState || {}, projects = []) {
   const root = $("#dashboardPublishingDestinations");
   root.innerHTML = "";
+  root.append(renderTikTokDashboardDestination(integrations.tiktok, projects));
+  root.append(renderYouTubeDashboardDestination(integrations.youtube, projects));
+}
+
+function renderTikTokDashboardDestination(tiktok, projects = []) {
   const card = document.createElement("article");
   card.className = "dashboard-destination-card";
   const connected = Boolean(tiktok?.connected);
@@ -2407,8 +2450,7 @@ function renderDashboardPublishing(tiktok, projects = []) {
     }, "primary");
     actions.append(connect);
     card.append(empty, actions);
-    root.append(card);
-    return;
+    return card;
   }
 
   const account = document.createElement("div");
@@ -2464,7 +2506,96 @@ function renderDashboardPublishing(tiktok, projects = []) {
   }, readyProject ? "primary" : "");
   actions.append(publish);
   card.append(actions);
-  root.append(card);
+  return card;
+}
+
+function renderYouTubeDashboardDestination(youtube, projects = []) {
+  const card = document.createElement("article");
+  card.className = "dashboard-destination-card";
+  const connected = Boolean(youtube?.connected);
+  const scopes = youtube?.scopes || [];
+  const canUpload = scopes.includes("https://www.googleapis.com/auth/youtube.upload");
+  const readyProject = projects.find((project) => project.status === "ready");
+  const channel = youtube?.channel || {};
+
+  const head = document.createElement("div");
+  head.className = "dashboard-destination-head";
+  const icon = document.createElement("span");
+  icon.className = "integration-logo youtube-logo";
+  icon.textContent = "▶";
+  const title = document.createElement("div");
+  title.innerHTML = `<h4>YouTube</h4><span class="status-badge ${connected ? "connected" : "muted"}"></span>`;
+  title.querySelector(".status-badge").textContent = connected ? "Connected" : "Not connected";
+  head.append(icon, title);
+  card.append(head);
+
+  if (!connected) {
+    const empty = document.createElement("p");
+    empty.textContent = "Connect YouTube to show channel details and upload readiness on your dashboard.";
+    const actions = document.createElement("div");
+    actions.className = "dashboard-destination-actions";
+    actions.append(dashboardAction("Connect YouTube", () => {
+      closeDashboard();
+      openSettings();
+    }, "primary"));
+    card.append(empty, actions);
+    return card;
+  }
+
+  const account = document.createElement("div");
+  account.className = "dashboard-destination-account";
+  const avatar = document.createElement("div");
+  avatar.className = "dashboard-destination-avatar youtube-avatar";
+  if (channel.avatarUrl) {
+    const image = document.createElement("img");
+    image.src = channel.avatarUrl;
+    image.alt = "";
+    avatar.append(image);
+  } else {
+    avatar.textContent = "▶";
+  }
+  const copy = document.createElement("div");
+  copy.className = "dashboard-destination-copy";
+  const name = document.createElement("strong");
+  name.textContent = channel.title || "YouTube channel";
+  const handle = document.createElement("small");
+  handle.textContent = channel.handle || "Channel connected";
+  copy.append(name, handle);
+  if (channel.description) {
+    const description = document.createElement("p");
+    description.textContent = channel.description;
+    copy.append(description);
+  }
+  account.append(avatar, copy);
+  card.append(account);
+
+  const readiness = document.createElement("div");
+  readiness.className = "dashboard-readiness";
+  if (canUpload) readiness.append(readinessBadge("Upload ready"));
+  else readiness.append(readinessBadge("Reconnect to enable uploads", true));
+  card.append(readiness);
+
+  const actions = document.createElement("div");
+  actions.className = "dashboard-destination-actions";
+  actions.append(dashboardAction("Manage Integration", () => {
+    closeDashboard();
+    openSettings();
+  }));
+  if (channel.channelUrl) {
+    actions.append(dashboardAction("View YouTube Channel", () => window.open(channel.channelUrl, "_blank", "noopener,noreferrer")));
+  }
+  const publish = dashboardAction(readyProject ? "Publish to YouTube" : "Create a clip to publish", () => {
+    if (!readyProject) {
+      closeDashboard();
+      toast("Create and render a klip before publishing to YouTube.");
+      return;
+    }
+    publishReadyDashboardProjectToYouTube(readyProject.id);
+  }, readyProject && canUpload ? "primary" : "");
+  publish.disabled = !canUpload && Boolean(readyProject);
+  actions.append(publish);
+  card.append(actions);
+  return card;
 }
 
 function dashboardAction(label, handler, variant = "") {
@@ -2488,20 +2619,7 @@ async function publishReadyDashboardProjectToTikTok(projectId) {
     const response = await fetch(`/api/projects/${projectId}`);
     const project = await response.json();
     if (!response.ok) throw new Error(project.error || "Could not open this project.");
-    const montage = project.montage?.status === "ready" && project.montage.downloadUrl
-      ? {
-        targetType: "montage",
-        projectId: project.id,
-        title: project.montage.title || "KlipPharma Auto-Mix",
-      }
-      : null;
-    const clip = (project.clips || []).find((item) => item.renderStatus === "ready" && item.downloadUrl);
-    const target = montage || (clip ? {
-      targetType: "clip",
-      projectId: project.id,
-      clipId: clip.id,
-      title: clip.title || "KlipPharma klip",
-    } : null);
+    const target = firstRenderedPublishTarget(project);
     if (!target) {
       toast("Render a final MP4 preview before publishing to TikTok.");
       return;
@@ -2511,6 +2629,40 @@ async function publishReadyDashboardProjectToTikTok(projectId) {
   } catch (error) {
     toast(error.message || "Could not prepare TikTok publishing.");
   }
+}
+
+async function publishReadyDashboardProjectToYouTube(projectId) {
+  try {
+    const response = await fetch(`/api/projects/${projectId}`);
+    const project = await response.json();
+    if (!response.ok) throw new Error(project.error || "Could not open this project.");
+    const target = firstRenderedPublishTarget(project);
+    if (!target) {
+      toast("Render a final MP4 preview before publishing to YouTube.");
+      return;
+    }
+    closeDashboard();
+    openYouTubePublish(target);
+  } catch (error) {
+    toast(error.message || "Could not prepare YouTube publishing.");
+  }
+}
+
+function firstRenderedPublishTarget(project) {
+  const montage = project.montage?.status === "ready" && project.montage.downloadUrl
+    ? {
+      targetType: "montage",
+      projectId: project.id,
+      title: project.montage.title || "KlipPharma Auto-Mix",
+    }
+    : null;
+  const clip = (project.clips || []).find((item) => item.renderStatus === "ready" && item.downloadUrl);
+  return montage || (clip ? {
+    targetType: "clip",
+    projectId: project.id,
+    clipId: clip.id,
+    title: clip.title || "KlipPharma klip",
+  } : null);
 }
 
 function renderIncomingKlipdose(projects, stats) {
@@ -2789,6 +2941,8 @@ async function openSettings() {
   $("#settingsError").classList.add("hidden");
   $("#tiktokIntegrationBody").textContent = "Checking TikTok connection…";
   $("#tiktokIntegrationActions").innerHTML = "";
+  $("#youtubeIntegrationBody").textContent = "Checking YouTube connection…";
+  $("#youtubeIntegrationActions").innerHTML = "";
   await loadIntegrationsStatus();
 }
 
@@ -2799,7 +2953,8 @@ async function loadIntegrationsStatus() {
     if (!response.ok) throw new Error(data.error || "Could not load integrations.");
     integrationsState = data;
     renderTikTokIntegration(data.tiktok);
-    if (!dashboardModal.classList.contains("hidden")) renderDashboardPublishing(data.tiktok, currentDashboardProjects);
+    renderYouTubeIntegration(data.youtube);
+    if (!dashboardModal.classList.contains("hidden")) renderDashboardPublishing(data, currentDashboardProjects);
   } catch (error) {
     $("#settingsError").textContent = error.message || "Could not load integrations.";
     $("#settingsError").classList.remove("hidden");
@@ -2908,6 +3063,178 @@ function renderTikTokIntegration(tiktok) {
   disconnect.textContent = "Disconnect";
   disconnect.addEventListener("click", disconnectTikTok);
   actions.append(refresh, disconnect);
+}
+
+function renderYouTubeIntegration(youtube) {
+  const body = $("#youtubeIntegrationBody");
+  const actions = $("#youtubeIntegrationActions");
+  body.innerHTML = "";
+  actions.innerHTML = "";
+  if (!youtube?.connected) {
+    body.innerHTML = `<span class="status-badge muted">Not connected</span><p>Connect a Google account with YouTube Data API access. KlipPharma stores OAuth tokens server-side and requests readonly plus upload permissions.</p>`;
+    const connect = document.createElement("button");
+    connect.className = "primary integration-primary";
+    connect.type = "button";
+    connect.textContent = "Connect YouTube →";
+    connect.addEventListener("click", () => {
+      window.location.assign("/api/integrations/youtube/oauth/start?returnTo=%2F%3Fsettings%3Dintegrations");
+    });
+    actions.append(connect);
+    return;
+  }
+  const channel = youtube.channel || {};
+  const scopes = youtube.scopes || [];
+  body.innerHTML = `
+    <span class="status-badge connected">Connected</span>
+    <div class="connected-profile tiktok-profile-card youtube-profile-card">
+      <div class="youtube-avatar-slot"></div>
+      <div class="tiktok-profile-main">
+        <div class="tiktok-name-line"><strong></strong></div>
+        <small class="youtube-handle"></small>
+        <p class="tiktok-bio hidden"></p>
+        <a class="tiktok-profile-link hidden" target="_blank" rel="noopener noreferrer">View YouTube Channel</a>
+      </div>
+    </div>
+    <div class="tiktok-stats-row youtube-stats-row"></div>
+    <div class="recent-tiktok-videos recent-youtube-videos">
+      <div class="section-mini-head"><strong>Recent YouTube Videos</strong><small></small></div>
+      <div class="tiktok-video-list youtube-video-list">Loading recent videos…</div>
+    </div>
+    <p class="scope-list"></p>
+  `;
+  const avatarSlot = body.querySelector(".youtube-avatar-slot");
+  if (channel.avatarUrl) {
+    const image = document.createElement("img");
+    image.src = channel.avatarUrl;
+    image.alt = "";
+    avatarSlot.append(image);
+  } else {
+    avatarSlot.innerHTML = '<span class="avatar-fallback youtube-fallback">▶</span>';
+  }
+  body.querySelector("strong").textContent = channel.title || "YouTube channel";
+  const handle = body.querySelector(".youtube-handle");
+  handle.textContent = channel.handle || "Channel identity connected";
+  if (channel.description) {
+    body.querySelector(".tiktok-bio").textContent = channel.description;
+    body.querySelector(".tiktok-bio").classList.remove("hidden");
+  }
+  if (channel.channelUrl) {
+    const link = body.querySelector(".tiktok-profile-link");
+    link.href = channel.channelUrl;
+    link.classList.remove("hidden");
+  }
+  const stats = body.querySelector(".youtube-stats-row");
+  [
+    ["Subscribers", youtube.stats?.hiddenSubscribers ? "Hidden" : formatTikTokCount(youtube.stats?.subscribers)],
+    ["Views", formatTikTokCount(youtube.stats?.views)],
+    ["Videos", formatTikTokCount(youtube.stats?.videos)],
+  ].forEach(([label, value]) => {
+    const item = document.createElement("span");
+    item.innerHTML = `<b></b><small></small>`;
+    item.querySelector("b").textContent = value;
+    item.querySelector("small").textContent = label;
+    stats.append(item);
+  });
+  loadYouTubeVideos();
+  body.querySelector(".scope-list").textContent = `Granted scopes: ${scopes.length ? scopes.join(", ") : "none reported"}`;
+  const refresh = document.createElement("button");
+  refresh.type = "button";
+  refresh.className = "secondary";
+  refresh.textContent = "Refresh YouTube";
+  refresh.addEventListener("click", refreshYouTube);
+  const disconnect = document.createElement("button");
+  disconnect.type = "button";
+  disconnect.className = "danger-secondary";
+  disconnect.textContent = "Disconnect";
+  disconnect.addEventListener("click", disconnectYouTube);
+  actions.append(refresh, disconnect);
+}
+
+async function refreshYouTube() {
+  const response = await fetch("/api/integrations/youtube/refresh", { method: "POST" });
+  const data = await response.json();
+  if (!response.ok) return toast(data.error || "Could not refresh YouTube.");
+  integrationsState = { ...integrationsState, youtube: data.youtube };
+  renderYouTubeIntegration(data.youtube);
+  if (!dashboardModal.classList.contains("hidden")) renderDashboardPublishing(integrationsState, currentDashboardProjects);
+  toast("YouTube refreshed.");
+}
+
+async function loadYouTubeVideos() {
+  const list = $("#youtubeIntegrationBody .youtube-video-list");
+  const summary = $("#youtubeIntegrationBody .section-mini-head small");
+  if (!list) return;
+  try {
+    const response = await fetch("/api/integrations/youtube/videos");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not load recent YouTube videos.");
+    renderYouTubeVideos(data.videos || []);
+    if (summary) summary.textContent = `${(data.videos || []).length} recent uploads`;
+  } catch (error) {
+    list.textContent = error.message || "Could not load recent YouTube videos.";
+  }
+}
+
+function renderYouTubeVideos(videos) {
+  const list = $("#youtubeIntegrationBody .youtube-video-list");
+  if (!list) return;
+  list.innerHTML = "";
+  if (!videos.length) {
+    list.innerHTML = "<p>No recent YouTube uploads were returned for this channel.</p>";
+    return;
+  }
+  videos.forEach((video) => {
+    const item = document.createElement("article");
+    item.className = "tiktok-video-card youtube-video-card";
+    const media = document.createElement(video.url ? "a" : "div");
+    media.className = "tiktok-video-cover youtube-video-cover";
+    if (video.url) {
+      media.href = video.url;
+      media.target = "_blank";
+      media.rel = "noopener noreferrer";
+      media.setAttribute("aria-label", "Open YouTube video");
+    }
+    if (video.thumbnailUrl) {
+      const image = document.createElement("img");
+      image.src = video.thumbnailUrl;
+      image.alt = "";
+      media.append(image);
+    } else {
+      media.textContent = "YouTube";
+    }
+    const copy = document.createElement("div");
+    copy.className = "tiktok-video-copy youtube-video-copy";
+    const title = document.createElement("strong");
+    title.textContent = video.title || "YouTube video";
+    const meta = document.createElement("small");
+    meta.textContent = [formatYouTubeDate(video.publishedAt), formatYouTubeDuration(video.duration)]
+      .filter(Boolean)
+      .join(" · ");
+    const description = document.createElement("p");
+    description.textContent = video.description || "";
+    const metrics = document.createElement("small");
+    metrics.textContent = `${formatTikTokCount(video.views)} views · ${formatTikTokCount(video.likes)} likes · ${formatTikTokCount(video.comments)} comments`;
+    copy.append(title, meta, description, metrics);
+    if (video.url) {
+      const link = document.createElement("a");
+      link.href = video.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = "Open on YouTube";
+      copy.append(link);
+    }
+    item.append(media, copy);
+    list.append(item);
+  });
+}
+
+async function disconnectYouTube() {
+  if (!confirm("Disconnect YouTube from KlipPharma?")) return;
+  const response = await fetch("/api/integrations/youtube", { method: "DELETE" });
+  const data = await response.json();
+  if (!response.ok) return toast(data.error || "Could not disconnect YouTube.");
+  await loadIntegrationsStatus();
+  toast("YouTube disconnected.");
 }
 
 async function refreshTikTok() {
@@ -3198,6 +3525,126 @@ async function pollTikTokPublishStatus(publishId) {
   }
 }
 
+async function openYouTubePublish(target) {
+  youtubePublishTarget = target;
+  youtubePublishModal.classList.remove("hidden");
+  $("#youtubePublishError").classList.add("hidden");
+  $("#youtubePublishStatus").classList.add("hidden");
+  $("#youtubePublishTarget").textContent = `${target.targetType === "montage" ? "Auto-Mix" : "Klip"}: ${target.title}`;
+  $("#youtubeTitle").value = String(target.title || "KlipPharma upload").slice(0, 100);
+  $("#youtubeDescription").value = "";
+  $("#youtubeTags").value = "KlipPharma";
+  $("#youtubeCategory").value = "22";
+  $("#youtubePrivacy").value = "private";
+  $("#youtubeMadeForKids").checked = false;
+  youtubeConsent.checked = false;
+  $("#youtubePublishConnection").textContent = "Checking YouTube connection…";
+  await loadIntegrationsStatus();
+  const youtube = integrationsState?.youtube;
+  const scopes = youtube?.scopes || [];
+  const canUpload = scopes.includes("https://www.googleapis.com/auth/youtube.upload");
+  if (!youtube?.connected) {
+    $("#youtubePublishConnection").innerHTML = "YouTube is not connected. Open Settings > Integrations and authorize a channel first.";
+    $("#youtubeSubmitButton").disabled = true;
+    return;
+  }
+  $("#youtubePublishConnection").innerHTML = `Connected to <strong>${youtube.channel?.title || "YouTube channel"}</strong>. Granted scopes: ${scopes.join(", ") || "none reported"}.<br><small>Private upload is recommended until Google completes app verification; Google may restrict unverified projects to private videos.</small>`;
+  if (!canUpload) {
+    $("#youtubePublishConnection").innerHTML += "<br><small>Publishing requires the youtube.upload scope. Reconnect YouTube and approve upload access.</small>";
+  }
+  paintYouTubePublishButton();
+}
+
+function paintYouTubePublishButton() {
+  const scopes = integrationsState?.youtube?.scopes || [];
+  const canUpload = integrationsState?.youtube?.connected
+    && scopes.includes("https://www.googleapis.com/auth/youtube.upload");
+  $("#youtubeSubmitButton").disabled = !canUpload || !youtubeConsent.checked || !$("#youtubeTitle").value.trim();
+}
+
+async function submitYouTubePublish() {
+  if (!youtubePublishTarget) return;
+  const button = $("#youtubeSubmitButton");
+  const status = $("#youtubePublishStatus");
+  const errorBox = $("#youtubePublishError");
+  button.disabled = true;
+  button.textContent = "Uploading to YouTube…";
+  errorBox.classList.add("hidden");
+  status.classList.remove("hidden");
+  status.textContent = "Starting a resumable YouTube upload. Keep this page open.";
+  try {
+    const scopes = integrationsState?.youtube?.scopes || [];
+    if (!scopes.includes("https://www.googleapis.com/auth/youtube.upload")) {
+      throw new Error("YouTube upload requires the youtube.upload permission. Reconnect YouTube and approve upload access.");
+    }
+    const response = await fetch("/api/integrations/youtube/publish", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...youtubePublishTarget,
+        title: $("#youtubeTitle").value,
+        description: $("#youtubeDescription").value,
+        tags: $("#youtubeTags").value,
+        categoryId: $("#youtubeCategory").value,
+        privacyStatus: $("#youtubePrivacy").value,
+        madeForKids: $("#youtubeMadeForKids").checked,
+        youtubeConsentAccepted: youtubeConsent.checked,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "YouTube upload failed.");
+    status.innerHTML = `<strong>${data.message || "YouTube upload started."}</strong><small>Video ID: ${data.videoId || "pending"}</small>${data.url ? `<a href="${data.url}" target="_blank" rel="noopener noreferrer">Open on YouTube</a>` : ""}<span id="youtubeLiveStatus">Checking processing status…</span>`;
+    if (data.videoId) pollYouTubePublishStatus(data.videoId);
+  } catch (error) {
+    errorBox.textContent = error.message || "YouTube upload failed.";
+    errorBox.classList.remove("hidden");
+    paintYouTubePublishButton();
+  } finally {
+    button.textContent = "Upload to YouTube →";
+  }
+}
+
+async function pollYouTubePublishStatus(videoId) {
+  const live = $("#youtubeLiveStatus");
+  if (!live) return;
+  try {
+    const response = await fetch("/api/integrations/youtube/publish/status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ videoId }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not check YouTube status.");
+    const processing = data.processingDetails?.processingStatus || "processing";
+    const upload = data.status?.uploadStatus || "uploaded";
+    const privacy = data.status?.privacyStatus ? ` · ${data.status.privacyStatus}` : "";
+    const failed = data.processingDetails?.processingFailureReason;
+    live.textContent = failed
+      ? `YouTube status: failed · ${failed}`
+      : `YouTube status: ${processing} · ${upload}${privacy}`;
+    if (!new Set(["succeeded", "failed", "terminated"]).has(processing)) {
+      setTimeout(() => pollYouTubePublishStatus(videoId), 6000);
+    }
+  } catch (error) {
+    live.textContent = error.message || "Could not check YouTube status.";
+  }
+}
+
+function formatYouTubeDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function formatYouTubeDuration(value) {
+  const match = String(value || "").match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
+  if (!match) return "";
+  const hours = Number(match[1] || 0);
+  const minutes = Number(match[2] || 0);
+  const seconds = Number(match[3] || 0);
+  return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}` : `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
 async function openBilling() {
   billingModal.classList.remove("hidden");
   $("#billingStatus").textContent = "Checking your subscription…";
@@ -3393,17 +3840,21 @@ function showAuthentication() {
 
 function handleStartupParameters() {
   const url = new URL(window.location.href);
-  const shouldOpenSettings = url.searchParams.get("settings") === "integrations" || url.searchParams.has("tiktok");
+  const shouldOpenSettings = url.searchParams.get("settings") === "integrations" || url.searchParams.has("tiktok") || url.searchParams.has("youtube");
   if (!shouldOpenSettings) return;
-  const result = url.searchParams.get("tiktok");
+  const tiktokResult = url.searchParams.get("tiktok");
+  const youtubeResult = url.searchParams.get("youtube");
   const message = url.searchParams.get("message");
   url.searchParams.delete("settings");
   url.searchParams.delete("tiktok");
+  url.searchParams.delete("youtube");
   url.searchParams.delete("message");
   history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
   openSettings();
-  if (result === "connected") toast("TikTok connected. The reviewer can now see the connected state.");
-  if (result === "error") toast(message || "TikTok authorization failed.");
+  if (tiktokResult === "connected") toast("TikTok connected. The reviewer can now see the connected state.");
+  if (tiktokResult === "error") toast(message || "TikTok authorization failed.");
+  if (youtubeResult === "connected") toast("YouTube connected. Channel details and upload readiness are visible now.");
+  if (youtubeResult === "error") toast(message || "YouTube authorization failed.");
 }
 
 bootstrapApplication();

@@ -386,6 +386,7 @@
           <button class="render">Build exact final preview</button>
           <a class="download hidden" download>Approve &amp; download MP4</a>
           <button class="tiktok-export hidden" type="button">Send to TikTok</button>
+          <button class="youtube-export hidden" type="button">Send to YouTube</button>
           <button class="delete-export hidden" type="button">Delete rendered MP4</button>
           <div class="feedback" aria-label="Rate this recommendation">
             <button data-rating="good" title="Good">✓</button><button data-rating="almost" title="Almost">~</button><button data-rating="bad" title="Bad">×</button><button data-rating="wrong-topic" title="Wrong topic">↯</button>
@@ -517,12 +518,13 @@
           <div class="integration-body" id="tiktokIntegrationBody">Checking TikTok connection…</div>
           <div class="integration-actions" id="tiktokIntegrationActions"></div>
         </article>
-        <article class="integration-card">
+        <article class="integration-card" id="youtubeIntegrationCard">
           <div class="integration-head">
             <span class="integration-logo youtube-logo">▶</span>
-            <div><h3>YouTube</h3><p>Source imports are available now. Account publishing will be added after TikTok approval.</p></div>
+            <div><h3>YouTube</h3><p>Authorize a YouTube channel for channel discovery, recent uploads, and verified MP4 publishing.</p></div>
           </div>
-          <div class="integration-body"><span class="status-badge muted">Not connected</span><p>YouTube uploads can still be imported from the main workspace when you own the video.</p></div>
+          <div class="integration-body" id="youtubeIntegrationBody">Checking YouTube connection…</div>
+          <div class="integration-actions" id="youtubeIntegrationActions"></div>
         </article>
       </div>
       <p class="billing-error hidden" id="settingsError"></p>
@@ -556,6 +558,34 @@
       <button class="primary" id="tiktokSubmitButton" type="button" disabled>Upload to TikTok →</button>
       <div class="tiktok-review-panel hidden" id="tiktokPublishStatus"></div>
       <p class="billing-error hidden" id="tiktokPublishError"></p>
+    </section>
+  </div>
+
+  <div class="billing-modal hidden" id="youtubePublishModal" role="dialog" aria-modal="true" aria-labelledby="youtubePublishTitle">
+    <section class="billing-dialog youtube-publish-dialog">
+      <button class="billing-close" id="youtubePublishClose" type="button" aria-label="Close YouTube publishing">×</button>
+      <span class="billing-kicker">YOUTUBE PUBLISHING</span>
+      <h2 id="youtubePublishTitle">Upload this MP4 to YouTube</h2>
+      <p class="settings-intro" id="youtubePublishTarget">Review the destination and confirm before any upload starts.</p>
+      <div class="tiktok-review-panel" id="youtubePublishConnection">Checking YouTube connection…</div>
+      <div class="tiktok-post-grid youtube-post-grid">
+        <label><span>PRIVACY</span><select id="youtubePrivacy"><option value="private">Private</option><option value="unlisted">Unlisted</option><option value="public">Public</option></select></label>
+        <label><span>TITLE</span><input id="youtubeTitle" maxlength="100" placeholder="YouTube title" /></label>
+        <label><span>DESCRIPTION</span><textarea id="youtubeDescription" rows="5" maxlength="5000" placeholder="Describe this KlipPharma upload."></textarea></label>
+        <label><span>TAGS</span><input id="youtubeTags" placeholder="clips, shorts, campaign" /></label>
+        <label><span>CATEGORY</span><select id="youtubeCategory"><option value="22">People & Blogs</option><option value="24">Entertainment</option><option value="26">Howto & Style</option><option value="27">Education</option><option value="28">Science & Technology</option></select></label>
+      </div>
+      <label class="billing-agreement">
+        <input id="youtubeMadeForKids" type="checkbox" />
+        <span>This video is made for kids.</span>
+      </label>
+      <label class="billing-agreement">
+        <input id="youtubeConsent" type="checkbox" />
+        <span>KlipPharma will upload this rendered MP4 to the connected YouTube channel only after I press the upload button. Private upload is recommended until Google verification is complete.</span>
+      </label>
+      <button class="primary" id="youtubeSubmitButton" type="button" disabled>Upload to YouTube →</button>
+      <div class="tiktok-review-panel hidden" id="youtubePublishStatus"></div>
+      <p class="billing-error hidden" id="youtubePublishError"></p>
     </section>
   </div>
 

@@ -15,6 +15,7 @@ const authError = $("#authError");
 const accountMenu = $("#accountMenu");
 const billingModal = $("#billingModal");
 const dashboardModal = $("#dashboardModal");
+const incomingModal = $("#incomingModal");
 const settingsModal = $("#settingsModal");
 const tiktokPublishModal = $("#tiktokPublishModal");
 const youtubePublishModal = $("#youtubePublishModal");
@@ -61,6 +62,8 @@ let tiktokPublishTarget = null;
 let tiktokCreatorInfo = null;
 let youtubePublishTarget = null;
 let currentDashboardProjects = [];
+let incomingRefreshTimer = null;
+let incomingState = { projects: [], stats: {}, connection: {} };
 const paidPlanTiers = new Set(["paid", "pro", "creator", "studio", "business"]);
 const creatorModeCopy = {
   auto: ["Smart Detect", "Balanced selection for mixed or general content."],
@@ -2158,10 +2161,11 @@ $("#logoutButton").addEventListener("click", async () => {
 
 $("#billingButton").addEventListener("click", openBilling);
 $("#dashboardButton").addEventListener("click", openDashboard);
-$("#incomingButton").addEventListener("click", () => openDashboard({ focusIncoming: true }));
+$("#incomingButton").addEventListener("click", openIncomingProjects);
 $("#settingsButton").addEventListener("click", openSettings);
 $("#billingClose").addEventListener("click", closeBilling);
 $("#dashboardClose").addEventListener("click", closeDashboard);
+$("#incomingClose").addEventListener("click", closeIncomingProjects);
 $("#settingsClose").addEventListener("click", closeSettings);
 $("#tiktokPublishClose").addEventListener("click", closeTikTokPublish);
 $("#youtubePublishClose").addEventListener("click", closeYouTubePublish);
@@ -2170,6 +2174,9 @@ billingModal.addEventListener("click", (event) => {
 });
 dashboardModal.addEventListener("click", (event) => {
   if (event.target === dashboardModal) closeDashboard();
+});
+incomingModal.addEventListener("click", (event) => {
+  if (event.target === incomingModal) closeIncomingProjects();
 });
 settingsModal.addEventListener("click", (event) => {
   if (event.target === settingsModal) closeSettings();
@@ -2183,6 +2190,7 @@ youtubePublishModal.addEventListener("click", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !billingModal.classList.contains("hidden")) closeBilling();
   if (event.key === "Escape" && !dashboardModal.classList.contains("hidden")) closeDashboard();
+  if (event.key === "Escape" && !incomingModal.classList.contains("hidden")) closeIncomingProjects();
   if (event.key === "Escape" && !settingsModal.classList.contains("hidden")) closeSettings();
   if (event.key === "Escape" && !tiktokPublishModal.classList.contains("hidden")) closeTikTokPublish();
   if (event.key === "Escape" && !youtubePublishModal.classList.contains("hidden")) closeYouTubePublish();
@@ -2260,6 +2268,11 @@ $("#dashboardUpgradeButton").addEventListener("click", () => {
   closeDashboard();
   openBilling();
 });
+$("#dashboardIncomingOpen").addEventListener("click", () => {
+  closeDashboard();
+  openIncomingProjects();
+});
+$("#incomingRefresh").addEventListener("click", () => loadIncomingProjects({ manual: true }));
 
 function closeBilling() {
   billingModal.classList.add("hidden");
@@ -2268,6 +2281,12 @@ function closeBilling() {
 function closeDashboard() {
   dashboardModal.classList.add("hidden");
   clearInterval(dashboardRefreshTimer);
+}
+
+function closeIncomingProjects() {
+  incomingModal.classList.add("hidden");
+  clearInterval(incomingRefreshTimer);
+  incomingRefreshTimer = null;
 }
 
 function closeSettings() {
@@ -2282,13 +2301,12 @@ function closeYouTubePublish() {
   youtubePublishModal.classList.add("hidden");
 }
 
-async function openDashboard(options = {}) {
+async function openDashboard() {
   dashboardModal.classList.remove("hidden");
   $("#dashboardHistory").innerHTML = '<div class="dashboard-empty">Loading your account history…</div>';
   $("#dashboardPublishingDestinations").innerHTML = '<div class="dashboard-empty">Checking publishing destinations…</div>';
-  $("#incomingList").innerHTML = '<div class="dashboard-empty">Loading incoming projects…</div>';
   $("#dashboardError").classList.add("hidden");
-  await loadDashboardData(options);
+  await loadDashboardData();
   clearInterval(dashboardRefreshTimer);
   dashboardRefreshTimer = setInterval(() => {
     if (!dashboardModal.classList.contains("hidden")) loadDashboardData({ quiet: true });
@@ -2311,41 +2329,10 @@ async function loadDashboardData(options = {}) {
     }
     integrationsState = integrations;
     renderDashboard(data, integrations);
-    try {
-      await loadIncomingKlipdoseData();
-    } catch (incomingError) {
-      $("#dashboardError").textContent = incomingError.message || "Could not load incoming Klipdose projects.";
-      $("#dashboardError").classList.remove("hidden");
-      $("#incomingList").innerHTML = `<div class="dashboard-empty">${incomingError.message || "Could not load incoming Klipdose projects."}</div>`;
-    }
-    if (options.focusIncoming) $("#incomingPanel").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
     $("#dashboardError").textContent = error.message;
     $("#dashboardError").classList.remove("hidden");
-    $("#incomingList").innerHTML = `<div class="dashboard-empty">${error.message || "Could not load incoming projects."}</div>`;
   }
-}
-
-async function loadIncomingKlipdoseData() {
-  const fetchUrl = "/api/incoming/klipdose";
-  const response = await fetch(fetchUrl, { cache: "no-store" });
-  const data = await response.json().catch(() => null);
-  logIncomingDashboardFetch({
-    fetchUrl,
-    httpStatus: response.status,
-    responseBody: data,
-    projectCount: Array.isArray(data?.projects) ? data.projects.length : null,
-    stats: data?.stats || null,
-  });
-  if (!response.ok) throw new Error(data?.error || "Could not load incoming Klipdose projects.");
-  if (!data || !Array.isArray(data.projects)) throw new Error("Incoming Projects response missing projects array.");
-  if (!data.stats || typeof data.stats !== "object") throw new Error("Incoming Projects response missing stats.");
-  renderIncomingKlipdose(data.projects, {
-    new: Number(data.stats.new ?? 0),
-    processing: Number(data.stats.processing ?? 0),
-    ready: Number(data.stats.ready ?? 0),
-    failed: Number(data.stats.failed ?? 0),
-  });
 }
 
 function renderDashboard(data, integrations = integrationsState || {}) {
@@ -2369,6 +2356,7 @@ function renderDashboard(data, integrations = integrationsState || {}) {
   $("#dashboardClips").textContent = stats.clips || 0;
   $("#dashboardCompleted").textContent = stats.completed || 0;
   renderDashboardPublishing(integrations, projects);
+  renderDashboardIncomingSummary(stats.klipdose || {});
   const tier = String(subscription.planTier || user.planTier || "free").toLowerCase();
   $("#dashboardUpgrade").classList.toggle("hidden", tier === "business");
   $("#dashboardUpgradeTitle").textContent = new Set(["pro", "studio"]).has(tier)
@@ -2416,6 +2404,201 @@ function renderDashboardPublishing(integrations = integrationsState || {}, proje
   root.innerHTML = "";
   root.append(renderTikTokDashboardDestination(integrations.tiktok, projects));
   root.append(renderYouTubeDashboardDestination(integrations.youtube, projects));
+}
+
+
+function renderDashboardIncomingSummary(stats = {}) {
+  $("#dashboardIncomingNew").textContent = Number(stats.new || 0);
+  $("#dashboardIncomingProcessing").textContent = Number(stats.processing || 0);
+  $("#dashboardIncomingReady").textContent = Number(stats.ready || 0);
+  $("#dashboardIncomingFailed").textContent = Number(stats.failed || 0);
+}
+
+async function openIncomingProjects() {
+  incomingModal.classList.remove("hidden");
+  $("#incomingList").innerHTML = '<div class="dashboard-empty">Loading incoming projects…</div>';
+  $("#incomingError").classList.add("hidden");
+  await loadIncomingProjects();
+  clearInterval(incomingRefreshTimer);
+  incomingRefreshTimer = setInterval(() => {
+    if (!incomingModal.classList.contains("hidden")) loadIncomingProjects({ quiet: true });
+  }, 15000);
+}
+
+async function loadIncomingProjects(options = {}) {
+  const refresh = $("#incomingRefresh");
+  if (!options.quiet) {
+    refresh.disabled = true;
+    refresh.textContent = options.manual ? "Refreshing…" : "Loading…";
+  }
+  try {
+    const response = await fetch("/api/incoming/klipdose", { cache: "no-store" });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(data?.error || "Could not load incoming Klipdose projects.");
+    if (!data || !Array.isArray(data.projects)) throw new Error("Incoming Projects response missing projects array.");
+    if (!data.stats || typeof data.stats !== "object") throw new Error("Incoming Projects response missing stats.");
+    incomingState = {
+      projects: data.projects,
+      stats: normalizeIncomingStats(data.stats),
+      connection: data.connection || {},
+    };
+    renderIncomingProjectsWorkspace(incomingState.projects, incomingState.stats, incomingState.connection);
+    renderDashboardIncomingSummary(incomingState.stats);
+    $("#incomingError").classList.add("hidden");
+  } catch (error) {
+    $("#incomingError").textContent = error.message || "Could not load incoming Klipdose projects.";
+    $("#incomingError").classList.remove("hidden");
+    $("#incomingList").innerHTML = `<div class="dashboard-empty">${error.message || "Could not load incoming Klipdose projects."}</div>`;
+  } finally {
+    refresh.disabled = false;
+    refresh.textContent = "Refresh";
+  }
+}
+
+function normalizeIncomingStats(stats = {}) {
+  return {
+    new: Number(stats.new ?? 0),
+    processing: Number(stats.processing ?? 0),
+    ready: Number(stats.ready ?? 0),
+    failed: Number(stats.failed ?? 0),
+  };
+}
+
+function renderIncomingProjectsWorkspace(projects = [], stats = {}, connection = {}) {
+  const normalizedStats = normalizeIncomingStats(stats);
+  $("#incomingNew").textContent = normalizedStats.new;
+  $("#incomingProcessing").textContent = normalizedStats.processing;
+  $("#incomingReady").textContent = normalizedStats.ready;
+  $("#incomingFailed").textContent = normalizedStats.failed;
+  const root = $("#incomingList");
+  root.innerHTML = "";
+  if (!projects.length) {
+    root.append(renderIncomingEmptyState(connection));
+    return;
+  }
+  projects.forEach((project) => root.append(renderIncomingProjectCard(project)));
+}
+
+function renderIncomingEmptyState(connection = {}) {
+  const empty = document.createElement("div");
+  empty.className = "incoming-empty-state";
+  const title = document.createElement("h3");
+  title.textContent = "No incoming Klipdose projects yet.";
+  const copy = document.createElement("p");
+  copy.textContent = "Projects sent from Klipdose will appear here automatically.";
+  const config = document.createElement("small");
+  config.textContent = connection.configured
+    ? "Klipdose handoff connection is configured."
+    : "Klipdose handoff connection is not configured.";
+  const actions = document.createElement("div");
+  actions.className = "incoming-actions inline-actions";
+  actions.append(actionButton("Refresh", () => loadIncomingProjects({ manual: true })));
+  if (connection.openUrl) {
+    const open = document.createElement("a");
+    open.className = "incoming-link";
+    open.href = connection.openUrl;
+    open.target = "_blank";
+    open.rel = "noopener noreferrer";
+    open.textContent = "Open Klipdose";
+    actions.append(open);
+  }
+  empty.append(title, copy, config, actions);
+  return empty;
+}
+
+function renderIncomingProjectCard(project) {
+  const card = document.createElement("article");
+  card.className = `incoming-card incoming-card-${incomingBucket(project)}`;
+  const thumb = document.createElement("div");
+  thumb.className = "incoming-thumb";
+  if (project.thumbnailUrl) thumb.style.backgroundImage = `url(${project.thumbnailUrl})`;
+  else thumb.textContent = "KP";
+  const body = document.createElement("div");
+  body.className = "incoming-body";
+  const meta = document.createElement("div");
+  meta.className = "incoming-meta";
+  [project.platformBadge || "SOURCE", "KLIPDOSE", incomingStatusLabel(project)].forEach((label) => {
+    const badge = document.createElement("span");
+    badge.textContent = label;
+    meta.append(badge);
+  });
+  const title = document.createElement("h4");
+  title.textContent = project.title || "Klipdose project";
+  const creator = document.createElement("p");
+  creator.textContent = project.creatorName || "Klipdose creator";
+  const detail = document.createElement("small");
+  const received = project.receivedAt ? new Date(project.receivedAt).toLocaleString() : "Received time unavailable";
+  const clips = Number(project.clipCount || project.clips?.length || 0);
+  detail.textContent = `${received} · ${project.progress || 0}%${clips ? ` · ${clips} clips` : ""}`;
+  const stage = document.createElement("small");
+  stage.textContent = project.stage || project.sourceState || "Waiting for review";
+  body.append(meta, title, creator, detail, stage);
+  if (project.error) {
+    const error = document.createElement("p");
+    error.className = "incoming-error";
+    error.textContent = project.error;
+    body.append(error);
+  }
+  const controls = document.createElement("div");
+  controls.className = "incoming-actions";
+  incomingActionsForProject(project).forEach((action) => controls.append(action));
+  card.append(thumb, body, controls);
+  return card;
+}
+
+function incomingBucket(project) {
+  const status = String(project.status || "new");
+  if (status === "ready") return "ready";
+  if (status === "processing" || status === "queued" || status === "importing") return "processing";
+  if (status === "failed" || status === "source_auth_required" || status === "source_unavailable") return "failed";
+  return "new";
+}
+
+function incomingStatusLabel(project) {
+  return {
+    new: "NEW",
+    processing: "PROCESSING",
+    ready: "READY FOR REVIEW",
+    failed: "FAILED",
+  }[incomingBucket(project)];
+}
+
+function incomingActionsForProject(project) {
+  const bucket = incomingBucket(project);
+  if (bucket === "new") {
+    return [
+      actionButton("Accept Project", (event) => startIncomingProject(project, event.currentTarget)),
+      incomingSourceLink(project, "Preview / View Details"),
+    ];
+  }
+  if (bucket === "processing") {
+    return [
+      actionButton("View Progress", () => viewIncomingProgress(project)),
+      incomingSourceLink(project, "View Details"),
+    ];
+  }
+  if (bucket === "ready") {
+    return [
+      actionButton("Open in KlipPharma", (event) => openIncomingProject(project, event.currentTarget)),
+      actionButton("Review Klips", (event) => openIncomingProject(project, event.currentTarget)),
+    ];
+  }
+  const actions = [actionButton("View Error", () => toast(project.error || project.stage || "This incoming project failed."))];
+  if (project.canRetryImport || project.status === "failed" || project.status === "source_auth_required" || project.status === "source_unavailable") {
+    actions.push(actionButton("Retry", (event) => startIncomingProject(project, event.currentTarget)));
+  }
+  return actions;
+}
+
+function incomingSourceLink(project, label) {
+  if (!project.sourceUrl) return actionButton(label, () => toast(project.stage || "No source URL was provided."));
+  const link = document.createElement("a");
+  link.className = "incoming-link";
+  link.href = project.sourceUrl;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = label;
+  return link;
 }
 
 function renderTikTokDashboardDestination(tiktok, projects = []) {
@@ -2607,6 +2790,15 @@ function dashboardAction(label, handler, variant = "") {
   return button;
 }
 
+function actionButton(label, handler, variant = "") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  if (variant) button.className = variant;
+  button.addEventListener("click", handler);
+  return button;
+}
+
 function readinessBadge(label, muted = false) {
   const badge = document.createElement("span");
   badge.className = `readiness-badge${muted ? " muted" : ""}`;
@@ -2665,174 +2857,41 @@ function firstRenderedPublishTarget(project) {
   } : null);
 }
 
-function renderIncomingKlipdose(projects, stats) {
-  const normalizedStats = {
-    new: Number(stats?.new ?? 0),
-    processing: Number(stats?.processing ?? 0),
-    ready: Number(stats?.ready ?? 0),
-    failed: Number(stats?.failed ?? 0),
-  };
-  const normalizedProjects = Array.isArray(projects) ? projects : [];
-  logIncomingDashboardFetch({
-    render: true,
-    projectCount: normalizedProjects.length,
-    stats: normalizedStats,
-  });
-  $("#incomingNew").textContent = normalizedStats.new;
-  $("#incomingProcessing").textContent = normalizedStats.processing;
-  $("#incomingReady").textContent = normalizedStats.ready;
-  $("#incomingFailed").textContent = normalizedStats.failed;
-  const root = $("#incomingList");
-  root.innerHTML = "";
-  if (!normalizedProjects.length) {
-    root.innerHTML = '<div class="dashboard-empty">No active Klipdose handoffs have been received for this account yet.</div>';
-    return;
-  }
-  normalizedProjects.forEach((project) => {
-    const card = document.createElement("article");
-    card.className = "incoming-card";
-    const thumb = document.createElement("div");
-    thumb.className = "incoming-thumb";
-    if (project.thumbnailUrl) thumb.style.backgroundImage = `url(${project.thumbnailUrl})`;
-    else thumb.textContent = "KP";
-    const body = document.createElement("div");
-    body.className = "incoming-body";
-    const meta = document.createElement("div");
-    meta.className = "incoming-meta";
-    [project.platformBadge || "EXTERNAL", "KLIPDOSE", String(project.status || "new").toUpperCase()].forEach((label) => {
-      const badge = document.createElement("span");
-      badge.textContent = label;
-      meta.append(badge);
-    });
-    const title = document.createElement("h4");
-    title.textContent = project.title || "Klipdose project";
-    const creator = document.createElement("p");
-    creator.textContent = project.creatorName || "Klipdose creator";
-    const details = document.createElement("small");
-    const received = project.receivedAt ? new Date(project.receivedAt).toLocaleString() : "Received time unavailable";
-    details.textContent = `${received} · Opportunity ${project.opportunityScore ?? "N/A"} · Confidence ${project.confidence ?? "N/A"}%`;
-    const action = document.createElement("p");
-    action.textContent = project.recommendedAction || "Review source";
-    const state = document.createElement("small");
-    state.textContent = `Source state: ${project.sourceState || project.stage || project.status || "new"}`;
-    body.append(meta, title, creator, details, state, action);
-    if (project.error || project.status === "source_auth_required") {
-      const error = document.createElement("p");
-      error.className = "incoming-error";
-      error.textContent = project.error || "YouTube requires authenticated access for this source.";
-      body.append(error);
-    }
-    const controls = document.createElement("div");
-    controls.className = "incoming-actions";
-    const open = actionButton("OPEN IN EDITOR", () => openIncomingProject(project, open));
-    open.disabled = !(project.canOpenEditor || project.sourceReady || project.status === "ready");
-    const canRetry = project.canRetryImport || project.status === "failed" || project.status === "source_auth_required" || project.status === "awaiting_vod" || project.status === "source_unavailable";
-    const start = actionButton(canRetry ? "RETRY IMPORT" : "START PROCESSING", () => startIncomingProject(project, start));
-    start.disabled = project.status === "processing" || project.status === "queued" || project.status === "ready" || project.status === "importing" || project.status === "link_only" || !canRetry && project.status !== "new";
-    const review = document.createElement("a");
-    review.className = "incoming-link";
-    review.href = project.sourceUrl || "#";
-    review.target = "_blank";
-    review.rel = "noreferrer";
-    review.textContent = "OPEN SOURCE";
-    if (!project.sourceUrl) review.setAttribute("aria-disabled", "true");
-    const upload = actionButton("UPLOAD AUTHORIZED SOURCE", () => uploadIncomingSource(project, upload));
-    const archive = actionButton("ARCHIVE", () => archiveIncomingProject(project, archive));
-    controls.append(open, review, start, upload, archive);
-    card.append(thumb, body, controls);
-    root.append(card);
-  });
-}
-
-function actionButton(label, handler) {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.textContent = label;
-  button.addEventListener("click", handler);
-  return button;
-}
 
 async function openIncomingProject(project, button) {
   button.disabled = true;
-  button.textContent = "OPENING…";
+  button.textContent = "Opening…";
   try {
-    closeDashboard();
-    const response = await fetch(`/api/projects/${project.id}`);
-    const loaded = await response.json();
-    if (!response.ok) throw new Error(loaded.error || "Could not open this Klipdose project.");
-    currentProjects = [project.id];
-    if (loaded.status === "ready") {
-      renderResults([loaded]);
-      setView("results");
-    } else {
-      setView("processing");
-      pollProjects();
-    }
+    closeIncomingProjects();
+    await openSavedBatch([project.id], button);
   } catch (error) {
     button.disabled = false;
-    button.textContent = "OPEN IN EDITOR";
-    toast(error.message || "Could not open this Klipdose project.");
-    openDashboard({ focusIncoming: true });
+    button.textContent = "Open in KlipPharma";
+    toast(error.message || "Could not open this incoming project.");
   }
+}
+
+function viewIncomingProgress(project) {
+  closeIncomingProjects();
+  currentProjects = [project.id];
+  setView("processing");
+  pollProjects();
 }
 
 async function startIncomingProject(project, button) {
   button.disabled = true;
-  button.textContent = "STARTING…";
+  const originalLabel = button.textContent;
+  button.textContent = originalLabel.toLowerCase().includes("retry") ? "Retrying…" : "Accepting…";
   try {
     const response = await fetch(`/api/incoming/klipdose/${project.id}/start`, { method: "POST" });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Could not start processing.");
-    await loadDashboardData({ quiet: true });
+    if (!response.ok) throw new Error(data.error || "Could not start this incoming project.");
+    toast(data.alreadyReady ? "Incoming project is ready to review." : "Incoming project accepted. KlipPharma is processing it now.");
+    await loadIncomingProjects({ quiet: true });
   } catch (error) {
     button.disabled = false;
-    button.textContent = project.status === "failed" || project.status === "source_auth_required" ? "RETRY IMPORT" : "START PROCESSING";
-    toast(error.message || "Could not start processing.");
-  }
-}
-
-async function uploadIncomingSource(project, button) {
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = "video/mp4,video/quicktime,.mp4,.mov,.m4v";
-  input.addEventListener("change", async () => {
-    const file = input.files?.[0];
-    if (!file) return;
-    button.disabled = true;
-    button.textContent = "UPLOADING…";
-    try {
-      const formData = new FormData();
-      formData.append("source", file);
-      const response = await fetch(`/api/incoming/klipdose/${project.id}/source`, { method: "POST", body: formData });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Could not attach this source.");
-      toast("Authorized source attached. KlipPharma is processing it now.");
-      await loadDashboardData({ quiet: true });
-    } catch (error) {
-      button.disabled = false;
-      button.textContent = "UPLOAD AUTHORIZED SOURCE";
-      toast(error.message || "Could not attach this source.");
-    }
-  }, { once: true });
-  input.click();
-}
-
-async function archiveIncomingProject(project, button) {
-  button.disabled = true;
-  button.textContent = "ARCHIVING…";
-  try {
-    const response = await fetch(`/api/incoming/klipdose/${project.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "archive" }),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Could not archive project.");
-    await loadDashboardData({ quiet: true });
-  } catch (error) {
-    button.disabled = false;
-    button.textContent = "ARCHIVE";
-    toast(error.message || "Could not archive project.");
+    button.textContent = originalLabel;
+    toast(error.message || "Could not start this incoming project.");
   }
 }
 

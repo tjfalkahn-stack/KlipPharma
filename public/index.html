@@ -414,18 +414,17 @@
         <div class="dashboard-history-head"><h3>Connected accounts</h3><small>Publishing destinations</small></div>
         <div id="dashboardPublishingDestinations"></div>
       </section>
-      <section class="incoming-panel" id="incomingPanel">
+      <section class="incoming-panel dashboard-incoming-summary" id="dashboardIncomingSummary">
         <div class="dashboard-history-head">
           <div><span class="billing-kicker">INCOMING FROM KLIPDOSE</span><h3>Incoming Projects</h3></div>
-          <small>Auto-refreshes while open</small>
+          <button class="secondary compact-action" id="dashboardIncomingOpen" type="button">View all incoming projects</button>
         </div>
         <div class="incoming-stats">
-          <div><strong id="incomingNew">0</strong><span>New from Klipdose</span></div>
-          <div><strong id="incomingProcessing">0</strong><span>Processing</span></div>
-          <div><strong id="incomingReady">0</strong><span>Ready for review</span></div>
-          <div><strong id="incomingFailed">0</strong><span>Failed</span></div>
+          <div><strong id="dashboardIncomingNew">0</strong><span>New</span></div>
+          <div><strong id="dashboardIncomingProcessing">0</strong><span>Processing</span></div>
+          <div><strong id="dashboardIncomingReady">0</strong><span>Ready for review</span></div>
+          <div><strong id="dashboardIncomingFailed">0</strong><span>Failed</span></div>
         </div>
-        <div class="incoming-list" id="incomingList"><div class="dashboard-empty">Loading incoming projects…</div></div>
       </section>
       <section class="upgrade-nudge" id="dashboardUpgrade">
         <span>LEVEL UP YOUR STUDIO</span>
@@ -454,6 +453,28 @@
       <div class="dashboard-history-head"><h3>Previous uploads</h3><small id="dashboardHistoryScope">Account-only history</small></div>
       <div class="dashboard-history" id="dashboardHistory"></div>
       <p class="billing-error hidden" id="dashboardError"></p>
+    </section>
+  </div>
+
+  <div class="billing-modal hidden" id="incomingModal" role="dialog" aria-modal="true" aria-labelledby="incomingTitle">
+    <section class="billing-dialog incoming-dialog">
+      <button class="billing-close" id="incomingClose" type="button" aria-label="Close incoming projects">×</button>
+      <div class="incoming-workspace-head">
+        <div>
+          <span class="billing-kicker">INCOMING FROM KLIPDOSE</span>
+          <h2 id="incomingTitle">Incoming Projects</h2>
+          <p>Review videos and projects sent from Klipdose for editing, clipping, and publishing in KlipPharma.</p>
+        </div>
+        <button class="primary incoming-refresh" id="incomingRefresh" type="button">Refresh</button>
+      </div>
+      <div class="incoming-stats incoming-workspace-stats">
+        <div><strong id="incomingNew">0</strong><span>New</span></div>
+        <div><strong id="incomingProcessing">0</strong><span>Processing</span></div>
+        <div><strong id="incomingReady">0</strong><span>Ready for Review</span></div>
+        <div><strong id="incomingFailed">0</strong><span>Failed</span></div>
+      </div>
+      <p class="billing-error hidden" id="incomingError"></p>
+      <div class="incoming-list incoming-workspace-list" id="incomingList"><div class="dashboard-empty">Loading incoming projects…</div></div>
     </section>
   </div>
 

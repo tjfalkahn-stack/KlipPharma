@@ -260,10 +260,10 @@ async function createKlipdoseProject(input) {
     batchId: id,
     batchPosition: 1,
     batchSize: 1,
-    status: "importing",
-    progress: 3,
-    phase: "import",
-    stage: `Accepted from Klipdose · connecting to ${platformBadgeForSource(source.sourcePlatform)} source`,
+    status: "new",
+    progress: 0,
+    phase: "new",
+    stage: `Received from Klipdose · ${platformBadgeForSource(source.sourcePlatform)} source`,
     originalName: sanitizeYouTubeTitle(input.title),
     creatorName: input.creatorName,
     thumbnailUrl: input.thumbnailUrl || null,
@@ -312,13 +312,6 @@ async function createKlipdoseProject(input) {
   };
   jobs.set(id, job);
   await persistJob(job, { requireDatabase: authMode === "required" });
-  importProjectSource(job)
-    .catch((error) => {
-      console.error("Klipdose source import failed:", safeSourceImportLog(job, error));
-      removeYouTubeWorkingFiles(job.id);
-      applySourceImportFailure(job, error, "Klipdose source import failed");
-      persistJob(job);
-    });
   return job;
 }
 
@@ -562,6 +555,17 @@ app.post("/api/billing/resume", requireUser, async (req, res) => {
   }
 });
 
+
+function klipdoseConnectionForClient() {
+  const configured = Boolean(String(process.env.KLIPDOSE_SHARED_API_KEY || "").trim());
+  const url = String(process.env.KLIPDOSE_APP_URL || process.env.KLIPDOSE_URL || "").trim();
+  return {
+    configured,
+    openUrl: configured && /^https?:\/\//i.test(url) ? url : null,
+    ownerConfigured: Boolean(process.env.KLIPDOSE_PROJECT_OWNER_ID || authMode === "off"),
+  };
+}
+
 app.get("/api/account/dashboard", requireUser, async (req, res) => {
   const billingUser = await billingAccountForRequest(req);
   const profileUser = req.user.id === "local-owner" ? req.user : await findUserById(req.user.id);
@@ -618,7 +622,7 @@ app.get("/api/incoming/klipdose", requireUser, (req, res) => {
     returned: projects.length,
     totalKlipdoseProjects: [...jobs.values()].filter(isKlipdoseProject).length,
   });
-  res.json({ projects, stats: klipdoseIncomingStats([...jobs.values()].filter((job) => canAccessJob(req, job))) });
+  res.json({ projects, stats: klipdoseIncomingStats([...jobs.values()].filter((job) => canAccessJob(req, job))), connection: klipdoseConnectionForClient() });
 });
 
 app.get("/api/debug/klipdose-incoming", requireUser, async (req, res) => {
@@ -668,7 +672,7 @@ app.post("/api/incoming/klipdose/:id/start", requireUser, requireWorkspaceEditor
     status: "importing",
     progress: 3,
     phase: "import",
-    stage: "Restarting Klipdose source import",
+    stage: "Starting Klipdose source import",
     error: null,
     archivedAt: null,
     dismissedAt: null,
@@ -694,10 +698,10 @@ app.post("/api/incoming/klipdose/:id/source", requireUser, requireWorkspaceEdito
   const extension = path.extname(req.file.originalname).toLowerCase();
   if (!new Set([".mp4", ".mov", ".m4v"]).has(extension)) {
     removeLocalFile(req.file.path, uploadDir);
-    return res.status(400).json({ error: "Upload an MP4 or MOV source file." });
+    return res.status(400).json({ error: "Authorized source must be an MP4, MOV, or M4V file." });
   }
-  removeYouTubeWorkingFiles(job.id);
   const destination = path.join(uploadDir, `${job.id}${extension}`);
+  removeLocalFile(destination, uploadDir);
   fs.renameSync(req.file.path, destination);
   applyAuthorizedSourceAttachment(job, authorizedSourceAttachmentPatch({ filePath: destination, mimeType: mimeTypeFor(destination) }));
   persistJob(job);

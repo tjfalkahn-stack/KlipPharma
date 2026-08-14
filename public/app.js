@@ -2533,6 +2533,22 @@ function renderIncomingProjectCard(project) {
   const stage = document.createElement("small");
   stage.textContent = project.stage || project.sourceState || "Waiting for review";
   body.append(meta, title, creator, detail, stage);
+  const recommendation = project.recommendation || project.recommendedAction;
+  if (recommendation) {
+    const note = document.createElement("small");
+    note.textContent = `Recommendation: ${recommendation}`;
+    body.append(note);
+  }
+  const handoffDetails = [];
+  if (Number.isFinite(Number(project.viralScore ?? project.opportunityScore))) handoffDetails.push(`Score ${Math.round(Number(project.viralScore ?? project.opportunityScore))}`);
+  if (Number(project.proposedClipCount || 0)) handoffDetails.push(`${project.proposedClipCount} proposed clips`);
+  if (Number(project.proposedCaptionCount || 0)) handoffDetails.push(`${project.proposedCaptionCount} captions`);
+  if (project.hashtags?.length) handoffDetails.push(project.hashtags.slice(0, 4).map((tag) => `#${tag}`).join(" "));
+  if (handoffDetails.length) {
+    const extra = document.createElement("small");
+    extra.textContent = handoffDetails.join(" · ");
+    body.append(extra);
+  }
   if (project.error) {
     const error = document.createElement("p");
     error.className = "incoming-error";
@@ -2568,7 +2584,8 @@ function incomingActionsForProject(project) {
   if (bucket === "new") {
     return [
       actionButton("Accept Project", (event) => startIncomingProject(project, event.currentTarget)),
-      incomingSourceLink(project, "Preview / View Details"),
+      incomingSourceLink(project, "Review Details"),
+      actionButton("Reject", (event) => rejectIncomingProject(project, event.currentTarget)),
     ];
   }
   if (bucket === "processing") {
@@ -2587,6 +2604,7 @@ function incomingActionsForProject(project) {
   if (project.canRetryImport || project.status === "failed" || project.status === "source_auth_required" || project.status === "source_unavailable") {
     actions.push(actionButton("Retry", (event) => startIncomingProject(project, event.currentTarget)));
   }
+  actions.push(actionButton("Reject", (event) => rejectIncomingProject(project, event.currentTarget)));
   return actions;
 }
 
@@ -2895,6 +2913,27 @@ async function startIncomingProject(project, button) {
   }
 }
 
+
+async function rejectIncomingProject(project, button) {
+  button.disabled = true;
+  const originalLabel = button.textContent;
+  button.textContent = "Rejecting…";
+  try {
+    const response = await fetch(`/api/incoming/klipdose/${project.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "reject", reason: "Rejected in KlipPharma" }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not reject this incoming project.");
+    toast("Incoming project rejected.");
+    await loadIncomingProjects({ quiet: true });
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = originalLabel;
+    toast(error.message || "Could not reject this incoming project.");
+  }
+}
 async function loadTeamPanel() {
   try {
     const response = await fetch("/api/team");

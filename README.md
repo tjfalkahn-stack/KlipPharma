@@ -136,6 +136,14 @@ On startup, KlipPharma creates its `users`, `sessions`, and `projects` tables. C
 
 PostgreSQL stores project metadata and ownership. Without R2, media remains on the local filesystem; with R2 configured, new sources upload directly to private object storage and can be recovered by the processor. Rendered exports still live on the processor filesystem, so moving exports to R2 and adding a durable FFmpeg queue are the next infrastructure slice.
 
+## KlipDose handoffs
+
+KlipDose sends server-to-server handoffs to `POST /api/integrations/klipdose/projects` on the configured `KLIPPHARMA_API_URL`. KlipPharma validates the bearer token or `x-api-key` against `KLIPPHARMA_API_KEY` before accepting a handoff; the legacy `KLIPDOSE_SHARED_API_KEY` name is still supported for existing deployments. Every accepted handoff is written to PostgreSQL before the API returns success, and repeated requests with the same idempotency key return the existing Incoming Project instead of creating a duplicate.
+
+Production handoffs require `AUTH_MODE=required`, `DATABASE_URL`, `KLIPPHARMA_API_URL`, `KLIPPHARMA_API_KEY`, and `KLIPDOSE_PROJECT_OWNER_ID`. Set `KLIPDOSE_CALLBACK_SECRET` to sign callback requests with `x-klippharma-signature`; if it is omitted, KlipPharma falls back to the handoff API key for signing. Persistent media storage must be configured with either a durable `/app/storage` volume or the R2 settings below. Callback URLs, API keys, media paths, and token material are server-only and are never returned to browser APIs.
+
+Handoffs may include creator/platform identity, source URL and metadata, highlight score, recommendation, proposed clip timestamps, captions, hashtags, callback URL, and idempotency key. KlipPharma reports `received`, `importing`, `ready`, `rejected`, and `failed` states to the supplied callback URL and retries temporary callback failures without creating duplicate projects.
+
 ## Private Cloudflare R2 uploads
 
 When all R2 settings in `.env.example` are present, KlipPharma switches the browser to private direct uploads automatically. The app issues a short-lived, owner-scoped presigned URL; the browser sends each source straight to R2, and the processor retrieves a private working copy only when FFmpeg needs it. Local development continues using the existing multipart upload route when R2 is not configured.

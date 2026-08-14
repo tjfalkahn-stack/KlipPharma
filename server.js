@@ -52,6 +52,17 @@ import {
   objectStorageConfigured,
   verifyObject,
 } from "./lib/object-storage.js";
+import {
+  applyKlipdoseHandoffState,
+  klipdoseApiKeyFromEnv,
+  klipdoseCallbackPayload,
+  klipdoseCallbackSecret,
+  parseKlipdoseHandoffPayload,
+  recordKlipdoseCallbackAttempt,
+  shouldRetryKlipdoseCallback,
+  signKlipdoseCallbackBody,
+  validateKlipdoseApiToken,
+} from "./lib/klipdose-handoff.js";
 import { normalizeYouTubeSource, sanitizeYouTubeTitle } from "./lib/youtube.js";
 import {
   assertSafePublicUrl,
@@ -229,10 +240,16 @@ function timingSafeSecretEqual(provided, expected) {
 }
 
 function requireKlipdoseIntegration(req, res, next) {
-  const configured = String(process.env.KLIPDOSE_SHARED_API_KEY || "").trim();
+  const configured = klipdoseApiKeyFromEnv(process.env);
   const header = String(req.headers.authorization || "");
-  const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
-  if (!timingSafeSecretEqual(token, configured)) return res.status(401).json({ error: "Unauthorized." });
+  const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : String(req.headers["x-api-key"] || "");
+  if (!configured) {
+    return res.status(503).json({
+      error: "KlipPharma handoff API is not configured.",
+      code: "KLIPPHARMA_API_KEY_REQUIRED",
+    });
+  }
+  if (!validateKlipdoseApiToken(token, process.env)) return res.status(401).json({ error: "Unauthorized.", code: "UNAUTHORIZED" });
   const ip = req.ip || req.socket?.remoteAddress || "unknown";
   const now = Date.now();
   const bucket = integrationAttempts.get(ip) ?? { count: 0, resetAt: now + 60_000 };
@@ -245,6 +262,11 @@ function requireKlipdoseIntegration(req, res, next) {
 
 function existingKlipdoseProject(idempotencyKey) {
   return [...jobs.values()].find((job) => job.integrationSource === "klipdose" && job.idempotencyKey === idempotencyKey);
+}
+
+
+function parseKlipdoseProjectPayload(body = {}) {
+  return parseKlipdoseHandoffPayload(body);
 }
 
 async function createKlipdoseProject(input) {
@@ -268,6 +290,10 @@ async function createKlipdoseProject(input) {
     creatorName: input.creatorName,
     thumbnailUrl: input.thumbnailUrl || null,
     filePath: null,
+    creatorIdentity: input.creatorIdentity || {},
+    platformIdentity: input.platformIdentity || {},
+    sourceMetadata: input.sourceMetadata || {},
+    viralScore: input.viralScore,
     objectKey: null,
     mimeType: "video/mp4",
     sourceProvider: source.sourcePlatform,
@@ -280,15 +306,18 @@ async function createKlipdoseProject(input) {
     klipdoseCreatorId: input.klipdoseCreatorId,
     sourceContentId: input.sourceContentId,
     idempotencyKey: input.idempotencyKey,
-    callbackUrl: input.callbackUrl || null,
+    callbackUrl: input.callbackUrl,
     requestedStartTimestamp: input.requestedStartTimestamp ?? null,
     requestedEndTimestamp: input.requestedEndTimestamp ?? null,
     captionDraft: input.captionDraft ?? null,
-    hashtags: input.hashtags ?? null,
+    proposedCaptions: input.proposedCaptions || [],
+    hashtags: input.hashtags || [],
     language: input.language,
     opportunityScore: input.opportunityScore,
     confidence: input.confidence,
+    klipdoseRecommendation: input.recommendation || input.recommendedAction,
     recommendedAction: input.recommendedAction,
+    klipdoseProposedClips: input.clips || [],
     evidence: input.evidence,
     klipdoseReceivedAt: new Date().toISOString(),
     processingMode: "ai",
@@ -306,26 +335,28 @@ async function createKlipdoseProject(input) {
     customOutputCountEnabled: true,
     klipPharmaWatermarkRequired: false,
     audience: "Klipdose creator opportunity",
-    goal: input.recommendedAction,
+    goal: input.recommendation || input.recommendedAction,
     platform: "TikTok / Reels / Shorts",
     createdAt: new Date().toISOString(),
   };
+  applyKlipdoseHandoffState(job, "received", { idempotencyKey: input.idempotencyKey });
   jobs.set(id, job);
   await persistJob(job, { requireDatabase: authMode === "required" });
   return job;
 }
 
 app.post("/api/integrations/klipdose/projects", requireKlipdoseIntegration, async (req, res) => {
-  const parsed = klipdoseProjectSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: "Invalid Klipdose project payload.", issues: parsed.error.issues.map((issue) => ({ path: issue.path, message: issue.message })) });
+  const parsed = parseKlipdoseProjectPayload(req.body);
+  if (!parsed.ok) return res.status(400).json({ error: "Invalid Klipdose project payload.", code: "INVALID_KLIPDOSE_HANDOFF", issues: parsed.issues });
   try {
-    const duplicate = existingKlipdoseProject(parsed.data.idempotencyKey);
-    const project = duplicate ?? await createKlipdoseProject(parsed.data);
+    const duplicate = existingKlipdoseProject(parsed.project.idempotencyKey);
+    const project = duplicate ?? await createKlipdoseProject(parsed.project);
     if (duplicate) await persistJob(project, { requireDatabase: authMode === "required" });
+    if (!duplicate) enqueueKlipdoseCallback(project, "received");
     console.log("Klipdose handoff accepted", {
       projectId: project.id,
       duplicate: Boolean(duplicate),
-      sourceContentId: parsed.data.sourceContentId,
+      sourceContentId: parsed.project.sourceContentId,
       ownerId: project.userId,
       databasePersistenceRequired: authMode === "required",
     });
@@ -333,11 +364,11 @@ app.post("/api/integrations/klipdose/projects", requireKlipdoseIntegration, asyn
       success: true,
       projectId: project.id,
       status: duplicate ? "DUPLICATE" : "ACCEPTED",
-      idempotencyKey: parsed.data.idempotencyKey,
+      idempotencyKey: parsed.project.idempotencyKey,
     });
   } catch (error) {
     console.error("Klipdose handoff rejected before persistence:", { message: error.message });
-    return res.status(500).json({ error: error.message || "Klipdose project could not be created." });
+    return res.status(500).json({ error: error.message || "Klipdose project could not be created.", code: "KLIPDOSE_PERSISTENCE_FAILED" });
   }
 });
 
@@ -677,18 +708,22 @@ app.post("/api/incoming/klipdose/:id/start", requireUser, requireWorkspaceEditor
     archivedAt: null,
     dismissedAt: null,
   });
+  applyKlipdoseHandoffState(job, "importing", { action: "accepted" });
   persistJob(job);
+  enqueueKlipdoseCallback(job, "importing");
   importProjectSource(job)
     .catch((error) => {
       console.error("Klipdose incoming import failed:", safeSourceImportLog(job, error));
       removeYouTubeWorkingFiles(job.id);
       applySourceImportFailure(job, error, "Klipdose source import failed");
+      applyKlipdoseHandoffState(job, "failed", { error: job.error, code: error?.code || null });
       persistJob(job);
+      enqueueKlipdoseCallback(job, "failed", { error: job.error });
     });
   res.status(202).json({ project: klipdoseProjectForClient(job) });
 });
 
-app.post("/api/incoming/klipdose/:id/source", requireUser, requireWorkspaceEditor, upload.single("source"), (req, res) => {
+app.post("/api/incoming/klipdose/:id/source", requireUser, requireWorkspaceEditor, upload.single("source"), async (req, res) => {
   const job = ownedJob(req, req.params.id);
   if (!job || !isKlipdoseProject(job)) {
     removeLocalFile(req.file?.path, uploadDir);
@@ -704,8 +739,20 @@ app.post("/api/incoming/klipdose/:id/source", requireUser, requireWorkspaceEdito
   removeLocalFile(destination, uploadDir);
   fs.renameSync(req.file.path, destination);
   applyAuthorizedSourceAttachment(job, authorizedSourceAttachmentPatch({ filePath: destination, mimeType: mimeTypeFor(destination) }));
+  try {
+    await validateKlipdoseImportedMedia(job, destination);
+  } catch (error) {
+    removeLocalFile(destination, uploadDir);
+    removeYouTubeWorkingFiles(job.id);
+    applyKlipdoseMediaValidationFailure(job, error);
+    persistJob(job);
+    enqueueKlipdoseCallback(job, "failed", { error: job.error });
+    return res.status(422).json({ error: error.message || "Authorized source could not be validated.", code: error.code || "MEDIA_VALIDATION_FAILED" });
+  }
+  applyKlipdoseHandoffState(job, "importing", { action: "authorized_source_uploaded" });
   persistJob(job);
   enqueueProject(job);
+  enqueueKlipdoseCallback(job, "importing");
   res.status(202).json({ project: klipdoseProjectForClient(job) });
 });
 
@@ -716,11 +763,30 @@ app.patch("/api/incoming/klipdose/:id", requireUser, requireWorkspaceEditor, (re
   if (action === "archive" || action === "dismiss") {
     job.archivedAt = new Date().toISOString();
     job.dismissedAt = job.archivedAt;
+  } else if (action === "reject") {
+    const reason = String(req.body?.reason || "Rejected in KlipPharma").trim().slice(0, 240);
+    Object.assign(job, {
+      status: "rejected",
+      progress: Math.min(100, Math.max(0, Number(job.progress || 0))),
+      phase: "rejected",
+      stage: "Rejected in KlipPharma",
+      error: reason,
+      archivedAt: new Date().toISOString(),
+      dismissedAt: new Date().toISOString(),
+    });
+    applyKlipdoseHandoffState(job, "rejected", { reason });
+    enqueueKlipdoseCallback(job, "rejected", { error: reason });
   } else if (action === "restore") {
     delete job.archivedAt;
     delete job.dismissedAt;
+    if (job.status === "rejected") {
+      job.status = "new";
+      job.phase = "new";
+      job.stage = "Restored for review";
+      delete job.error;
+    }
   } else {
-    return res.status(400).json({ error: "Choose archive, dismiss, or restore." });
+    return res.status(400).json({ error: "Choose archive, dismiss, reject, or restore." });
   }
   persistJob(job);
   res.json({ project: klipdoseProjectForClient(job) });
@@ -1381,6 +1447,10 @@ function runNextProjects() {
           error: friendlyError(error),
           failedAt: new Date().toISOString(),
         });
+        if (isKlipdoseProject(job)) {
+          applyKlipdoseHandoffState(job, "failed", { error: job.error });
+          enqueueKlipdoseCallback(job, "failed", { error: job.error });
+        }
         persistJob(job);
       })
       .finally(() => {
@@ -1809,6 +1879,7 @@ async function importYouTubeSource(job, canonicalUrl) {
   const size = fs.statSync(downloaded).size;
   if (!size || size > 1024 * 1024 * 1024) throw new Error("The imported video must be smaller than 1 GB.");
 
+  if (isKlipdoseProject(job)) await validateKlipdoseImportedMedia(job, downloaded);
   const printed = result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const title = sanitizeYouTubeTitle(printed.find((line) => !path.isAbsolute(line)) || "YouTube video");
   job.filePath = downloaded;
@@ -1934,8 +2005,102 @@ function completeImportedSource(job, filePath, stage) {
   job.originalName = job.originalName || path.basename(filePath);
   job.sourceReady = true;
   Object.assign(job, { status: "queued", progress: 48, phase: "queued", stage, error: null });
+  if (isKlipdoseProject(job)) {
+    validateKlipdoseImportedMedia(job, filePath)
+      .then(() => {
+        persistJob(job);
+        enqueueProject(job);
+      })
+      .catch((error) => {
+        removeLocalFile(filePath, uploadDir);
+        applyKlipdoseMediaValidationFailure(job, error);
+        persistJob(job);
+        enqueueKlipdoseCallback(job, "failed", { error: job.error });
+      });
+    return;
+  }
   persistJob(job);
   enqueueProject(job);
+}
+
+
+async function validateKlipdoseImportedMedia(job, filePath) {
+  const command = ffmpegPath || "ffmpeg";
+  const [duration, hasVideo, hasAudio] = await Promise.all([
+    probeDuration(command, filePath).catch(() => 0),
+    probeHasVideo(command, filePath),
+    probeHasAudio(command, filePath),
+  ]);
+  if (!duration || !hasVideo || !hasAudio) {
+    const error = new Error("Imported Klipdose media must contain a playable video stream and usable audio.");
+    error.code = "MEDIA_VALIDATION_FAILED";
+    throw error;
+  }
+  job.duration = Math.max(Number(job.duration || 0), Number(duration) || 0);
+  return true;
+}
+
+function applyKlipdoseMediaValidationFailure(job, error) {
+  Object.assign(job, {
+    status: "failed",
+    progress: Math.min(95, Math.max(3, Number(job.progress || 3))),
+    phase: "failed",
+    stage: "Klipdose media validation failed",
+    error: error.message || "Imported Klipdose media must contain a playable video stream and usable audio.",
+    sourceReady: false,
+    failedAt: new Date().toISOString(),
+  });
+  applyKlipdoseHandoffState(job, "failed", { error: job.error, code: error.code || "MEDIA_VALIDATION_FAILED" });
+}
+
+function enqueueKlipdoseCallback(job, state, extra = {}) {
+  if (!job?.callbackUrl) return;
+  void deliverKlipdoseCallback(job, state, extra, 1);
+}
+
+async function deliverKlipdoseCallback(job, state, extra = {}, attempt = 1) {
+  const payload = klipdoseCallbackPayload(job, state, extra);
+  const bodyText = JSON.stringify(payload);
+  const signature = signKlipdoseCallbackBody(bodyText, klipdoseCallbackSecret(process.env));
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  let shouldRetry = false;
+  try {
+    const response = await fetch(job.callbackUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "user-agent": "KlipPharma-Klipdose-Callback/1.0",
+        ...(signature ? { "x-klippharma-signature": signature } : {}),
+      },
+      body: bodyText,
+      signal: controller.signal,
+    });
+    shouldRetry = shouldRetryKlipdoseCallback(response.status);
+    recordKlipdoseCallbackAttempt(job, {
+      state,
+      attempt,
+      statusCode: response.status,
+      delivered: response.ok,
+      final: response.ok || !shouldRetry || attempt >= 5,
+    });
+    persistJob(job);
+  } catch (error) {
+    shouldRetry = attempt < 5;
+    recordKlipdoseCallbackAttempt(job, {
+      state,
+      attempt,
+      delivered: false,
+      final: attempt >= 5,
+      error: error?.name === "AbortError" ? "Callback request timed out." : "Callback request failed.",
+    });
+    persistJob(job);
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (shouldRetry && attempt < 5) {
+    setTimeout(() => deliverKlipdoseCallback(job, state, extra, attempt + 1), Math.min(30000, 1000 * (2 ** attempt)));
+  }
 }
 
 function runFfmpegImport(args, job, label) {
@@ -2287,6 +2452,10 @@ async function processProject(job) {
       phase: "ready",
       stage: job.silentSource ? "Visual editor ready · add audio when you want" : "Manual editor ready",
     });
+    if (isKlipdoseProject(job)) {
+      applyKlipdoseHandoffState(job, "ready", { clipCount: job.clips.length });
+      enqueueKlipdoseCallback(job, "ready", { clipCount: job.clips.length });
+    }
     persistJob(job);
     return;
   }
@@ -2341,6 +2510,10 @@ async function processProject(job) {
     feedback: null,
   }));
   Object.assign(job, { status: "ready", progress: 100, phase: "ready", stage: `${job.clips.length} dope clips found` });
+  if (isKlipdoseProject(job)) {
+    applyKlipdoseHandoffState(job, "ready", { clipCount: job.clips.length });
+    enqueueKlipdoseCallback(job, "ready", { clipCount: job.clips.length });
+  }
   persistJob(job);
 }
 
@@ -3900,6 +4073,17 @@ function probeHasAudio(command, inputPath) {
     child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-30000); });
     child.on("error", () => resolve(false));
     child.on("close", () => resolve(/Stream\s+#.*Audio:/.test(stderr)));
+  });
+}
+
+
+function probeHasVideo(command, inputPath) {
+  return new Promise((resolve) => {
+    const child = spawn(command, ["-i", inputPath], { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-30000); });
+    child.on("error", () => resolve(false));
+    child.on("close", () => resolve(/Stream\s+#.*Video:/.test(stderr)));
   });
 }
 

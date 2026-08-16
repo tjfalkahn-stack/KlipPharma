@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node --env-file=.env.local --watch server.js",
     "start": "node server.js",
-    "check": "node --check server.js && node --check public/app.js && node --check lib/database.js && node --check lib/object-storage.js && node --check lib/youtube.js && node --check lib/youtube-cookies.js && node --check lib/source-platform.js && node --check lib/klipdose-attachment.js",
+    "check": "node --check server.js && node --check public/app.js && node --check lib/database.js && node --check lib/object-storage.js && node --check lib/upload-sessions.js && node --check lib/youtube.js && node --check lib/youtube-cookies.js && node --check lib/source-platform.js && node --check lib/klipdose-attachment.js",
     "test": "node --test"
   },
   "dependencies": {

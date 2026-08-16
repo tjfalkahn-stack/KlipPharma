@@ -27,6 +27,21 @@
     </div>
   </header>
 
+
+  <section class="global-upload-manager hidden" id="globalUploadManager" aria-live="polite">
+    <div class="global-upload-copy">
+      <span id="globalUploadState">No active uploads</span>
+      <strong id="globalUploadTitle">Uploads</strong>
+      <small id="globalUploadDetail">KlipPharma uploads and processing will appear here.</small>
+    </div>
+    <div class="global-upload-meter"><i id="globalUploadMeter"></i></div>
+    <div class="global-upload-actions">
+      <button type="button" id="globalUploadPause">Pause</button>
+      <button type="button" id="globalUploadResume">Resume</button>
+      <button type="button" id="globalUploadCancel">Cancel</button>
+    </div>
+  </section>
+
   <section class="auth-view hidden" id="authView">
     <div class="auth-card">
       <span class="auth-kicker">PRIVATE CREATOR WORKSPACE</span>

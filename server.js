@@ -13,11 +13,14 @@ import { fileURLToPath } from "node:url";
 import {
   AuthError,
   authMode,
+  assertUploadSessionSchemaReady,
   authenticateUser,
   beginStripeWebhookEvent,
+  claimDatabaseProjectProcessingLease,
   createSession,
   createUser,
   createWorkspaceInvitation,
+  databaseConfigured,
   deleteDatabaseProject,
   deleteSocialConnection,
   deleteSession,
@@ -30,11 +33,15 @@ import {
   listWorkspaceInvitations,
   listKlipdoseDatabaseProjectDebug,
   loadDatabaseProjects,
+  loadDatabaseUploadSession,
+  loadDatabaseUploadSessions,
   recordBillingAgreement,
   removeWorkspaceMember,
+  releaseDatabaseProjectProcessingLease,
   releaseStripeWebhookEvent,
   revokeWorkspaceInvitation,
   saveDatabaseProject,
+  saveDatabaseUploadSession,
   setStripeCustomerId,
   upsertSocialConnection,
   syncStripeSubscription,
@@ -45,13 +52,26 @@ import { isArchivedKlipdoseProject, isKlipdoseProject, klipdoseIncomingStats, kl
 import { applyAuthorizedSourceAttachment, authorizedSourceAttachmentPatch } from "./lib/klipdose-attachment.js";
 import { klipdoseOwnerConfigForRequest } from "./lib/klipdose-owner-config.js";
 import {
-  assertOwnedKey,
-  createDirectUpload,
+  abortMultipartUpload,
+  completeMultipartUpload,
+  createMultipartPartUpload,
+  createMultipartUpload,
   deleteObject,
   downloadObject,
   objectStorageConfigured,
   verifyObject,
 } from "./lib/object-storage.js";
+import {
+  attachMultipartUpload,
+  createUploadSession,
+  findUploadFile,
+  markUploadFileCompleted,
+  recordUploadPart,
+  refreshSessionStatus,
+  setUploadFileStatus,
+  uploadSessionForClient,
+  canAccessUploadSession as canAccessUploadSessionRecord,
+} from "./lib/upload-sessions.js";
 import {
   applyKlipdoseHandoffState,
   klipdoseApiKeyFromEnv,
@@ -84,9 +104,11 @@ const storageRoot = process.env.STORAGE_ROOT ? path.resolve(process.env.STORAGE_
 const uploadDir = path.join(storageRoot, "uploads");
 const exportDir = path.join(storageRoot, "exports");
 const projectsDir = path.join(storageRoot, "projects");
+const uploadSessionsDir = path.join(storageRoot, "upload-sessions");
 fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(exportDir, { recursive: true });
 fs.mkdirSync(projectsDir, { recursive: true });
+fs.mkdirSync(uploadSessionsDir, { recursive: true });
 
 const app = express();
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -106,6 +128,7 @@ const billingConfigured = Boolean(stripe && stripeWebhookSecret && stripeCreator
 const appBaseUrl = String(process.env.APP_BASE_URL || `http://localhost:${process.env.PORT || 3100}`)
   .trim().replace(/\/+$/, "");
 const jobs = new Map();
+const uploadSessions = new Map();
 const previewTasks = new Map();
 const batchMontageTasks = new Map();
 const processingQueue = [];
@@ -114,6 +137,18 @@ const oauthStates = new Map();
 const localSocialConnections = new Map();
 const integrationAttempts = new Map();
 const maxConcurrentProjects = 2;
+const processingLeaseOwner = `${os.hostname()}-${process.pid}-${crypto.randomUUID()}`;
+const uploadLimits = {
+  maxFiles: Number(process.env.UPLOAD_MAX_FILES || 10),
+  maxFileBytes: Number(process.env.UPLOAD_MAX_FILE_BYTES || 1024 * 1024 * 1024),
+  maxBatchBytes: Number(process.env.UPLOAD_MAX_BATCH_BYTES || 2 * 1024 * 1024 * 1024),
+  partSize: Number(process.env.UPLOAD_PART_SIZE_BYTES || 8 * 1024 * 1024),
+  mimePrefixes: String(process.env.UPLOAD_ALLOWED_MIME_PREFIXES || "video/,audio/")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean),
+};
+const uploadSessionTtlMs = Math.max(24 * 60 * 60 * 1000, Number(process.env.UPLOAD_SESSION_TTL_MS || 7 * 24 * 60 * 60 * 1000));
 const defaultTikTokScopes = "user.info.basic,user.info.profile,user.info.stats,video.list,video.upload,video.publish";
 const defaultYouTubeScopes = "https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube.upload";
 const productionAppOrigin = "https://app.klippharma.com";
@@ -1165,18 +1200,139 @@ app.use("/api/youtube", requireUser);
 app.use(["/api/uploads", "/api/projects", "/api/batches", "/api/youtube"], requireWorkspaceEditor);
 
 app.post("/api/uploads/presign", async (req, res) => {
-  if (!objectStorageConfigured) return res.status(409).json({ error: "Direct cloud uploads are not enabled on this installation." });
-  const files = Array.isArray(req.body.files) ? req.body.files.slice(0, 10) : [];
-  if (!files.length) return res.status(400).json({ error: "Choose at least one video or audio file." });
+  res.status(410).json({ error: "Direct whole-file upload URLs are disabled. Use resumable upload sessions." });
+});
+
+app.get("/api/uploads/sessions", (req, res) => {
+  const sessions = [...uploadSessions.values()]
+    .filter((session) => canAccessUploadSession(req, session))
+    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+    .slice(0, 20)
+    .map(uploadSessionForClient);
+  res.json({ sessions });
+});
+
+app.post("/api/uploads/sessions", async (req, res) => {
+  if (!objectStorageConfigured) return res.status(409).json({ error: "Resumable cloud uploads are not enabled on this installation." });
   try {
-    const uploads = await Promise.all(files.map(async (file) => {
-      const size = Number(file.size);
-      if (!Number.isFinite(size) || size <= 0 || size > 1024 * 1024 * 1024) throw new Error("Each source must be between 1 byte and 1 GB.");
-      return { ...(await createDirectUpload(req.user.id, file)), name: String(file.name || "video").slice(0, 180), size, type: String(file.type || "application/octet-stream").slice(0, 200) };
-    }));
-    res.json({ uploads });
+    await ensureProductionUploadPersistence();
+    const session = createUploadSession({
+      userId: req.user.id,
+      workspaceId: req.team?.id || null,
+      files: req.body.files,
+      settings: req.body.settings || {},
+      fileOptions: req.body.fileOptions || [],
+      partSize: uploadLimits.partSize,
+      limits: uploadLimits,
+    });
+    for (const file of session.files) {
+      attachMultipartUpload(file, await createMultipartUpload(req.user.id, file, { batchId: session.batchId, fileId: file.id }));
+    }
+    refreshSessionStatus(session);
+    uploadSessions.set(session.id, session);
+    await persistUploadSession(session, { requireDatabase: true });
+    res.status(201).json({ session: uploadSessionForClient(session) });
   } catch (error) {
-    res.status(400).json({ error: error.message || "Could not prepare the direct upload." });
+    res.status(400).json({ error: error.message || "Could not create an upload session." });
+  }
+});
+
+app.get("/api/uploads/sessions/:sessionId", async (req, res) => {
+  const session = await ownedUploadSession(req, req.params.sessionId);
+  if (!session) return res.status(404).json({ error: "Upload session not found." });
+  res.json({ session: uploadSessionForClient(session) });
+});
+
+app.post("/api/uploads/sessions/:sessionId/files/:fileId/parts/:partNumber", async (req, res) => {
+  const session = await ownedUploadSession(req, req.params.sessionId);
+  if (!session) return res.status(404).json({ error: "Upload session not found." });
+  try {
+    const file = findUploadFile(session, req.params.fileId);
+    if (file.status === "cancelled") return res.status(409).json({ error: "This upload was cancelled." });
+    if (file.status === "paused") return res.status(409).json({ error: "This upload is paused." });
+    const partNumber = Number(req.params.partNumber);
+    const upload = await createMultipartPartUpload(req.user.id, {
+      objectKey: file.objectKey,
+      uploadId: file.uploadId,
+      partNumber,
+    });
+    setUploadFileStatus(session, file.id, "uploading");
+    await persistUploadSession(session, { requireDatabase: true });
+    res.json({ ...upload, partNumber });
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Could not prepare that upload part." });
+  }
+});
+
+app.patch("/api/uploads/sessions/:sessionId/files/:fileId/parts/:partNumber", async (req, res) => {
+  const session = await ownedUploadSession(req, req.params.sessionId);
+  if (!session) return res.status(404).json({ error: "Upload session not found." });
+  try {
+    const file = recordUploadPart(session, req.params.fileId, {
+      partNumber: req.params.partNumber,
+      etag: req.body.etag,
+      size: req.body.size,
+    });
+    await persistUploadSession(session, { requireDatabase: true });
+    res.json({ file: uploadSessionForClient({ ...session, files: [file] }).files[0], session: uploadSessionForClient(session) });
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Could not record that uploaded part." });
+  }
+});
+
+app.post("/api/uploads/sessions/:sessionId/files/:fileId/complete", async (req, res) => {
+  const session = await ownedUploadSession(req, req.params.sessionId);
+  if (!session) return res.status(404).json({ error: "Upload session not found." });
+  try {
+    const file = findUploadFile(session, req.params.fileId);
+    if (file.projectId && jobs.has(file.projectId)) {
+      return res.status(202).json({ id: file.projectId, batchId: session.batchId, session: uploadSessionForClient(session), alreadyQueued: true });
+    }
+    if (!file.completedParts?.length || file.completedParts.length !== file.totalParts) {
+      return res.status(409).json({ error: "Finish uploading every file part before processing starts." });
+    }
+    if (file.status === "finalizing") return res.status(409).json({ error: "This upload is already being finalized." });
+    setUploadFileStatus(session, file.id, "finalizing", { error: null });
+    await persistUploadSession(session, { requireDatabase: true });
+    await completeMultipartUpload(req.user.id, {
+      objectKey: file.objectKey,
+      uploadId: file.uploadId,
+      parts: file.completedParts,
+    });
+    const stored = await verifyObject(req.user.id, file.objectKey);
+    if (!stored.size || stored.size > uploadLimits.maxFileBytes) throw new Error("The uploaded source could not be verified.");
+    if (!isSupportedStoredMedia(file, stored)) throw new Error("The uploaded source type is not supported.");
+    const result = createProjectFromUploadSessionFile(req, session, file, stored);
+    markUploadFileCompleted(session, file.id, { projectId: result.id });
+    await persistUploadSession(session, { requireDatabase: true });
+    res.status(202).json({ ...result, session: uploadSessionForClient(session) });
+  } catch (error) {
+    try {
+      setUploadFileStatus(session, req.params.fileId, "failed", { error: error.message || "Upload finalization failed." });
+      await persistUploadSession(session, { requireDatabase: true });
+    } catch {}
+    res.status(400).json({ error: error.message || "Could not finalize that upload." });
+  }
+});
+
+app.post("/api/uploads/sessions/:sessionId/files/:fileId/:action", async (req, res) => {
+  const session = await ownedUploadSession(req, req.params.sessionId);
+  if (!session) return res.status(404).json({ error: "Upload session not found." });
+  const action = String(req.params.action || "");
+  try {
+    const file = findUploadFile(session, req.params.fileId);
+    if (action === "pause") setUploadFileStatus(session, file.id, "paused");
+    else if (action === "resume" || action === "retry") setUploadFileStatus(session, file.id, file.uploadedBytes ? "uploading" : "ready_to_upload", { error: null });
+    else if (action === "cancel") {
+      await abortMultipartUpload(req.user.id, { objectKey: file.objectKey, uploadId: file.uploadId });
+      setUploadFileStatus(session, file.id, "cancelled");
+    } else {
+      return res.status(404).json({ error: "Upload action not found." });
+    }
+    await persistUploadSession(session, { requireDatabase: true });
+    res.json({ session: uploadSessionForClient(session) });
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Could not update that upload." });
   }
 });
 
@@ -1330,27 +1486,82 @@ app.post("/api/youtube/import", (req, res) => {
 });
 
 app.post("/api/projects/cloud", async (req, res) => {
-  if (!objectStorageConfigured) return res.status(409).json({ error: "Cloud object storage is not configured." });
-  const sources = Array.isArray(req.body.sources) ? req.body.sources.slice(0, 10) : [];
-  if (!sources.length) return res.status(400).json({ error: "Upload at least one source before creating the project." });
-  try {
-    const files = await Promise.all(sources.map(async (source) => {
-      const objectKey = assertOwnedKey(req.user.id, source.objectKey);
-      const stored = await verifyObject(req.user.id, objectKey);
-      if (!stored.size || stored.size > 1024 * 1024 * 1024) throw new Error("Each uploaded source must be smaller than 1 GB.");
-      return {
-        originalname: String(source.name || "video").slice(0, 180),
-        mimetype: stored.type || String(source.type || "application/octet-stream"),
-        objectKey,
-        path: path.join(uploadDir, path.basename(objectKey)),
-      };
-    }));
-    const result = createProjectBatch(req, files, Array.isArray(req.body.fileOptions) ? req.body.fileOptions : []);
-    res.status(202).json(result);
-  } catch (error) {
-    res.status(400).json({ error: error.message || "The cloud upload could not be verified." });
-  }
+  res.status(410).json({ error: "Legacy cloud project handoff is disabled. Use resumable upload sessions." });
 });
+
+function createProjectFromUploadSessionFile(req, session, file, stored) {
+  if (file.projectId && jobs.has(file.projectId)) {
+    return { id: file.projectId, batchId: session.batchId, ids: [file.projectId], alreadyQueued: true };
+  }
+  const id = crypto.randomUUID();
+  const body = session.settings || {};
+  const job = {
+    id,
+    userId: req.user.id,
+    workspaceId: req.team?.id || session.workspaceId || null,
+    batchId: session.batchId,
+    batchPosition: Number(file.index || 0) + 1,
+    batchSize: session.files.length,
+    uploadSessionId: session.id,
+    uploadFileId: file.id,
+    status: "queued",
+    progress: 2,
+    phase: "queued",
+    stage: "Queued for processing — safe to leave",
+    originalName: file.name,
+    filePath: path.join(uploadDir, path.basename(file.objectKey)),
+    objectKey: file.objectKey,
+    mimeType: stored.type || file.type,
+    processingMode: file.transcribe === false ? "manual" : "ai",
+    sourceLanguage: normalizeSourceLanguage(body.sourceLanguage),
+    translationLanguage: normalizeTranslationLanguage(body.translationLanguage),
+    audioTranslation: normalizeAudioTranslation(body.audioTranslation, body.translationLanguage),
+    dubVoice: normalizeDubVoice(body.dubVoice),
+    contentType: normalizeCreatorMode(body.contentType),
+    clipLength: normalizeClipLength(body.clipLength),
+    createMontage: body.createMontage === true || body.createMontage === "true",
+    montageLength: normalizeMontageLength(body.montageLength),
+    montageStyle: normalizeMontageStyle(body.montageStyle),
+    watermarkText: normalizeWatermarkText(body.watermarkText),
+    watermarkPosition: normalizeOverlayPosition(body.watermarkPosition),
+    planTier: normalizePlanTier(req.user.planTier),
+    requestedOutputCount: normalizeRequestedOutputCount(body.outputCount, req.user.planTier),
+    customOutputCountEnabled: hasProBatchOutput(req.user.planTier),
+    klipPharmaWatermarkRequired: !hasPaidPlan(req.user.planTier),
+    audience: body.audience || "General audience",
+    goal: body.goal || "High-retention social clips",
+    platform: body.platform || "Instagram Reels",
+    createdAt: new Date().toISOString(),
+  };
+  jobs.set(id, job);
+  persistJob(job);
+  const existingMontageOwner = [...jobs.values()].find((item) => item.batchId === session.batchId && item.montage);
+  if (!existingMontageOwner && job.createMontage) {
+    job.montage = {
+      status: "waiting",
+      targetDuration: job.montageLength,
+      style: job.montageStyle,
+      sourceCount: session.files.length,
+      captionsEnabled: session.files.some((item) => item.transcribe !== false),
+      captionStyle: "bold",
+      captionPosition: "bottom",
+      sourceVolume: 100,
+      addedAudioVolume: 35,
+      audioStart: 0,
+      audioLoop: true,
+      audioFadeIn: 1,
+      audioFadeOut: 1,
+      autoDuck: true,
+      revision: 1,
+      translationLanguage: job.translationLanguage,
+      audioTranslation: job.audioTranslation,
+      dubVoice: job.dubVoice,
+    };
+    persistJob(job);
+  }
+  enqueueProject(job);
+  return { id, batchId: session.batchId, ids: [id], projects: [{ id, originalName: job.originalName, processingMode: job.processingMode }] };
+}
 
 function createProjectBatch(req, files, fileOptions = []) {
 
@@ -1436,7 +1647,7 @@ function runNextProjects() {
   while (activeProjects < maxConcurrentProjects && processingQueue.length) {
     const job = processingQueue.shift();
     activeProjects += 1;
-    processProject(job)
+    processClaimedProject(job)
       .catch((error) => {
         console.error(error);
         Object.assign(job, {
@@ -1459,6 +1670,19 @@ function runNextProjects() {
         maybeStartBatchMontage(job.batchId);
         runNextProjects();
       });
+  }
+}
+
+async function processClaimedProject(job) {
+  const claimed = await claimDatabaseProjectProcessingLease(job.id, job.userId, processingLeaseOwner);
+  if (!claimed) {
+    job.stage = "Processing claimed by another worker";
+    return;
+  }
+  try {
+    await processProject(job);
+  } finally {
+    await releaseDatabaseProjectProcessingLease(job.id, job.userId, processingLeaseOwner, job.status);
   }
 }
 
@@ -3827,6 +4051,104 @@ function persistJob(job, options = {}) {
   });
 }
 
+async function persistUploadSession(session, options = {}) {
+  try {
+    const destination = path.join(uploadSessionsDir, `${session.id}.json`);
+    const temporary = `${destination}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify(session));
+    fs.renameSync(temporary, destination);
+  } catch (error) {
+    console.error(`Could not persist upload session ${session.id}:`, error.message);
+  }
+  try {
+    await saveDatabaseUploadSession(session);
+  } catch (error) {
+    console.error(`Could not save upload session ${session.id} to PostgreSQL:`, error.message);
+    if (options.requireDatabase || isProductionPersistenceRequired()) throw error;
+  }
+}
+
+function loadPersistedUploadSessions() {
+  for (const name of fs.readdirSync(uploadSessionsDir).filter((item) => item.endsWith(".json"))) {
+    try {
+      const session = JSON.parse(fs.readFileSync(path.join(uploadSessionsDir, name), "utf8"));
+      restoreInterruptedUploadSession(session);
+      uploadSessions.set(session.id, session);
+      void persistUploadSession(session);
+    } catch (error) {
+      console.error(`Could not restore upload session ${name}:`, error.message);
+    }
+  }
+}
+
+async function loadPostgresUploadSessions() {
+  const sessions = await loadDatabaseUploadSessions();
+  for (const session of sessions) {
+    restoreInterruptedUploadSession(session);
+    uploadSessions.set(session.id, session);
+    void persistUploadSession(session);
+  }
+}
+
+async function cleanupAbandonedUploadSessions() {
+  const cutoff = Date.now() - uploadSessionTtlMs;
+  for (const session of uploadSessions.values()) {
+    const updatedAt = Date.parse(session.updatedAt || session.createdAt || "");
+    if (!Number.isFinite(updatedAt) || updatedAt > cutoff) continue;
+    if (!["preparing", "ready_to_upload", "uploading", "paused", "interrupted", "failed", "cancelled"].includes(session.status)) continue;
+    for (const file of session.files || []) {
+      if (file.projectId || !file.objectKey || !file.uploadId || file.status === "queued_for_processing") continue;
+      try {
+        await abortMultipartUpload(session.userId, { objectKey: file.objectKey, uploadId: file.uploadId });
+      } catch (error) {
+        console.error(`Could not abort abandoned upload ${session.id}/${file.id}:`, error.message);
+      }
+      file.status = "cancelled";
+      file.error = "Upload session expired before the source finished transferring.";
+    }
+    session.status = "cancelled";
+    await persistUploadSession(session);
+  }
+}
+
+function restoreInterruptedUploadSession(session) {
+  if (!session?.id || !Array.isArray(session.files)) return;
+  for (const file of session.files) {
+    if (file.status === "uploading" || file.status === "ready_to_upload" || file.status === "preparing") {
+      file.status = file.completedParts?.length ? "interrupted" : "ready_to_upload";
+      file.error = "Upload interrupted — reconnect to resume.";
+    }
+  }
+  refreshSessionStatus(session);
+}
+
+function canAccessUploadSession(req, session) {
+  return canAccessUploadSessionRecord(req.user, req.team, session);
+}
+
+async function ownedUploadSession(req, sessionId) {
+  let session = uploadSessions.get(String(sessionId || ""));
+  if (!session && databaseConfigured) {
+    session = await loadDatabaseUploadSession(String(sessionId || ""));
+    if (session?.id) uploadSessions.set(session.id, session);
+  }
+  return canAccessUploadSession(req, session) ? session : null;
+}
+
+function isProductionPersistenceRequired() {
+  return databaseConfigured && authMode === "required";
+}
+
+async function ensureProductionUploadPersistence() {
+  if (!isProductionPersistenceRequired()) return;
+  await assertUploadSessionSchemaReady();
+}
+
+function isSupportedStoredMedia(file, stored) {
+  const type = String(stored?.type || file?.type || "");
+  return !type || type === "application/octet-stream" || uploadLimits.mimePrefixes.some((prefix) => type.startsWith(prefix));
+}
+
 function loadPersistedJobs() {
   for (const name of fs.readdirSync(projectsDir).filter((item) => item.endsWith(".json"))) {
     try {
@@ -4827,6 +5149,12 @@ const port = Number(process.env.PORT || 3100);
 
 async function startServer() {
   await initializeDatabase();
+  loadPersistedUploadSessions();
+  await loadPostgresUploadSessions();
+  await cleanupAbandonedUploadSessions();
+  setInterval(() => cleanupAbandonedUploadSessions().catch((error) => {
+    console.error("Upload cleanup failed:", error.message);
+  }), 60 * 60 * 1000).unref?.();
   loadPersistedJobs();
   await loadPostgresJobs();
   resumePersistedProjects();

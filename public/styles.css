@@ -647,6 +647,16 @@ blockquote { margin:0 0 9px; font-size:15px; color:#c1c9be; border-left:3px soli
 .dashboard-upload span { color:#8d978a; font-size:9px; }
 .dashboard-upload button { padding:7px 9px; border-radius:7px; color:#11170e; background:var(--green); font-size:9px; }
 .dashboard-empty { padding:22px; color:#879184; border:1px dashed #33402f; border-radius:10px; text-align:center; font-size:10px; }
+.global-upload-manager { position:sticky; top:74px; z-index:40; display:grid; grid-template-columns:minmax(0,1fr) 180px auto; gap:12px; align-items:center; margin:10px auto 0; width:min(1120px,calc(100% - 32px)); padding:12px 14px; border:1px solid #4d7130; border-radius:12px; background:rgba(9,15,8,.96); box-shadow:0 18px 36px rgba(0,0,0,.3); }
+.global-upload-copy { display:grid; gap:3px; min-width:0; }
+.global-upload-copy span { color:var(--green); font-size:8px; font-weight:900; letter-spacing:.13em; }
+.global-upload-copy strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#f5fff0; font:800 13px Manrope,sans-serif; }
+.global-upload-copy small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#9ca696; font-size:10px; }
+.global-upload-meter { height:8px; overflow:hidden; border-radius:999px; background:#1c2518; }
+.global-upload-meter i { display:block; width:0; height:100%; border-radius:999px; background:var(--green); transition:width .2s ease; }
+.global-upload-actions { display:flex; gap:6px; justify-content:end; }
+.global-upload-actions button { min-height:32px; padding:7px 9px; border:1px solid #3d4c35; border-radius:7px; color:#cbd3c8; background:#171e16; font-size:8px; font-weight:900; text-transform:uppercase; letter-spacing:.06em; }
+.global-upload-actions button:disabled { opacity:.45; cursor:not-allowed; }
 .hidden { display:none!important; }
 @media (max-width:1180px) { .automix-master-controls{grid-template-columns:1fr 1fr 1fr}.automix-audio-grid{grid-template-columns:1fr 1fr 1fr}.automix-moment{grid-template-columns:minmax(170px,.75fr) 185px minmax(230px,1.25fr)}.automix-moment-tools{grid-column:1/-1;justify-content:end} }
 @media (max-width:960px) { .source-methods{grid-template-columns:1fr}.creator-grid{grid-template-columns:1fr 1fr}.language-grid{grid-template-columns:1fr 1fr}.length-grid{grid-template-columns:repeat(3,1fr)}.automix-controls{grid-template-columns:1fr}.automix-builder.enabled .automix-controls{max-height:280px}.automix-length-grid{grid-template-columns:repeat(5,1fr)}.settings-grid{grid-template-columns:1fr 1fr}.integrations-grid,.tiktok-post-grid,.youtube-post-grid{grid-template-columns:1fr}.tiktok-post-grid label:nth-child(2){grid-row:auto}.youtube-post-grid label:nth-child(3){grid-column:auto}.tiktok-switches{grid-template-columns:1fr 1fr}.automix-result{grid-template-columns:1fr}.automix-result-actions{grid-column:1}.automix-source-preview{grid-template-columns:1fr}.automix-master-controls,.automix-audio-grid{grid-template-columns:1fr 1fr}.clip-dub-grid{grid-template-columns:1fr 1fr}.automix-sound-track{grid-template-columns:1fr auto auto}.automix-sound-copy{grid-column:1/-1}.automix-moment{grid-template-columns:1fr 185px 145px}.automix-moment-caption{grid-column:1/-1}.automix-moment-tools{grid-column:1/-1}.clip-editor{grid-template-columns:1fr}.caption-edit-grid,.meme-studio-controls,.final-render-preview{grid-template-columns:1fr}.watermark-grid{grid-template-columns:1fr 220px}.overlay-save-state{grid-column:1/-1}.preview-video{max-height:430px}.clip-card{grid-template-columns:70px 92px 1fr;gap:12px} }
@@ -655,6 +665,24 @@ blockquote { margin:0 0 9px; font-size:15px; color:#c1c9be; border-left:3px soli
 @media (max-width:520px) { .creator-grid{grid-template-columns:1fr}.length-grid,.automix-length-grid{grid-template-columns:1fr 1fr}.automix-toggle{grid-template-columns:auto minmax(0,1fr)}.automix-toggle>.toggle-track{grid-row:1/3}.automix-badge{display:none}.watermark-grid,.meme-select-grid,.meme-timing-grid,.tiktok-switches{grid-template-columns:1fr}.tiktok-stats-row{grid-template-columns:1fr 1fr}.tiktok-video-card{grid-template-columns:58px minmax(0,1fr)}.tiktok-video-cover{width:58px;height:78px}.dashboard-destination-account{grid-template-columns:1fr}.dashboard-destination-avatar{width:44px;height:44px}.dashboard-destination-actions{display:grid;grid-template-columns:1fr}.meme-studio-head{grid-template-columns:1fr auto}.meme-studio-head .pro-badge{grid-column:2;grid-row:1}.meme-upload-row{grid-template-columns:1fr}.brand-policy{grid-template-columns:auto 1fr}.brand-policy-badge{grid-column:2}.creator-card{min-height:132px}.workspace{padding:16px}.batch-recipe{padding:14px} }
 
 @media (max-width:760px) {
+  .global-upload-manager {
+    top:66px;
+    width:calc(100% - 20px);
+    grid-template-columns:1fr;
+    gap:9px;
+    padding:12px;
+  }
+  .global-upload-copy small {
+    white-space:normal;
+    line-height:1.35;
+  }
+  .global-upload-actions {
+    display:grid;
+    grid-template-columns:1fr 1fr 1fr;
+  }
+  .global-upload-actions button {
+    min-height:40px;
+  }
   .topbar {
     position:sticky;
     top:0;

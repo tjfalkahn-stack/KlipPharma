@@ -19,6 +19,10 @@ const incomingModal = $("#incomingModal");
 const settingsModal = $("#settingsModal");
 const tiktokPublishModal = $("#tiktokPublishModal");
 const youtubePublishModal = $("#youtubePublishModal");
+const globalUploadManagerPanel = $("#globalUploadManager");
+const globalUploadPause = $("#globalUploadPause");
+const globalUploadResume = $("#globalUploadResume");
+const globalUploadCancel = $("#globalUploadCancel");
 const checkoutAgreement = $("#checkoutAgreement");
 const cancelAgreement = $("#cancelAgreement");
 const tiktokConsent = $("#tiktokConsent");
@@ -64,6 +68,14 @@ let youtubePublishTarget = null;
 let currentDashboardProjects = [];
 let incomingRefreshTimer = null;
 let incomingState = { projects: [], stats: {}, connection: {} };
+const uploadManager = {
+  sessions: new Map(),
+  fileHandles: new Map(),
+  activeSessionId: null,
+  paused: false,
+  cancelled: false,
+  readyNotified: new Set(JSON.parse(localStorage.getItem("klippharmaReadyNotified") || "[]")),
+};
 const paidPlanTiers = new Set(["paid", "pro", "creator", "studio", "business"]);
 const creatorModeCopy = {
   auto: ["Smart Detect", "Balanced selection for mixed or general content."],
@@ -77,6 +89,10 @@ processingBack.addEventListener("click", () => {
   processingView.setAttribute("aria-busy", "false");
   setView("upload");
 });
+globalUploadPause?.addEventListener("click", () => updateActiveUploadFiles("pause"));
+globalUploadResume?.addEventListener("click", () => updateActiveUploadFiles("resume"));
+globalUploadCancel?.addEventListener("click", () => updateActiveUploadFiles("cancel"));
+restoreUploadManagerSnapshot();
 const languageNames = {
   en: "English", es: "Spanish", fr: "French", pt: "Portuguese", de: "German", it: "Italian",
   ja: "Japanese", ko: "Korean", zh: "Chinese", ar: "Arabic", hi: "Hindi",
@@ -141,6 +157,7 @@ function paintLanguageControls() {
 videoInput.addEventListener("change", () => {
   const pickedFiles = [...videoInput.files];
   const result = addSelectedFiles(pickedFiles);
+  bindSelectedFilesToInterruptedUploads(pickedFiles);
   // iOS Safari does not reliably allow scripts to rebuild FileList via DataTransfer.
   // Keep our own File objects and clear the native control so the same item can be picked again.
   videoInput.value = "";
@@ -168,6 +185,7 @@ dropzone.addEventListener("drop", (event) => {
   const files = event.dataTransfer?.files;
   if (!files?.length) return;
   const result = addSelectedFiles([...files]);
+  bindSelectedFilesToInterruptedUploads([...files]);
   if (!result.supported) return toast("Choose video or audio files.");
   if (result.limitReached) toast("KlipPharma holds up to 10 files in one batch.");
   else if (result.added) toast(`${result.added} ${result.added === 1 ? "video" : "videos"} added. ${selectedFiles.length} total.`);
@@ -236,14 +254,12 @@ form.addEventListener("submit", async (event) => {
     formData.set("fileOptions", JSON.stringify(fileOptions));
     let data;
     if (uploadMode === "direct") {
-      const response = await uploadBatchDirectly(formData, fileOptions);
-      data = await response.json();
-      if (!response.ok) throw new Error(data.error || "The cloud upload could not start.");
+      data = await startManagedUploadBatch(formData, fileOptions);
     } else {
       data = await uploadBatchLocally(formData);
     }
     currentProjects = data.ids || [data.id];
-    await pollProjects();
+    if (currentProjects.length) await pollProjects();
   } catch (error) {
     toast(error.message || "Upload failed.");
     setView("upload");
@@ -283,32 +299,48 @@ function uploadBatchLocally(formData) {
   });
 }
 
-async function uploadBatchDirectly(formData, fileOptions) {
-  $("#stage").textContent = `Preparing ${selectedFiles.length} private cloud ${selectedFiles.length === 1 ? "upload" : "uploads"}`;
-  $("#progressBar").style.width = "8%";
-  $("#progressText").textContent = "Secure direct upload";
-  const prepare = await fetch("/api/uploads/presign", {
+async function startManagedUploadBatch(formData, fileOptions) {
+  $("#stage").textContent = `Preparing ${selectedFiles.length} ${selectedFiles.length === 1 ? "upload" : "uploads"}`;
+  $("#progressBar").style.width = "4%";
+  $("#progressText").textContent = "Preparing upload";
+  $("#processingSummary").textContent = "Keep your browser active until the upload completes. You can use other KlipPharma screens.";
+  const settings = uploadSettingsFromForm(formData);
+  const response = await fetch("/api/uploads/sessions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ files: selectedFiles.map((file) => ({ name: file.name, type: file.type, size: file.size })) }),
+    body: JSON.stringify({
+      files: selectedFiles.map((file) => ({
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        lastModified: file.lastModified,
+      })),
+      settings,
+      fileOptions,
+    }),
   });
-  const prepared = await prepare.json();
-  if (!prepare.ok) throw new Error(prepared.error || "Could not prepare the cloud upload.");
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Could not prepare resumable uploads.");
+  const session = data.session;
+  uploadManager.sessions.set(session.id, session);
+  uploadManager.activeSessionId = session.id;
+  uploadManager.paused = false;
+  uploadManager.cancelled = false;
+  session.files.forEach((file, index) => {
+    uploadManager.fileHandles.set(file.id, selectedFiles[index]);
+  });
+  persistUploadManagerSnapshot();
+  renderManagedUploadSession(session);
+  renderGlobalUploadManager();
+  runManagedUploadSession(session.id).catch((error) => {
+    toast(error.message || "Upload interrupted — reconnect to resume.");
+    renderGlobalUploadManager();
+  });
+  return { batchId: session.batchId, ids: [] };
+}
 
-  const loadedByFile = selectedFiles.map(() => 0);
-  const totalByFile = selectedFiles.map((file) => file.size);
-  await Promise.all(prepared.uploads.map(async (upload, index) => {
-    await uploadFileDirectly(upload.uploadUrl, selectedFiles[index], upload.type, (loaded) => {
-      loadedByFile[index] = loaded;
-      renderUploadTransfer(loadedByFile, totalByFile, "Uploading privately to cloud storage");
-    });
-  }));
-
-  $("#stage").textContent = "Verifying uploads and starting the processors";
-  $("#progressBar").style.width = "84%";
-  const settings = {
-    sources: prepared.uploads.map((upload) => ({ objectKey: upload.objectKey, name: upload.name, type: upload.type, size: upload.size })),
-    fileOptions,
+function uploadSettingsFromForm(formData) {
+  return {
     audience: formData.get("audience"),
     goal: formData.get("goal"),
     platform: formData.get("platform"),
@@ -325,33 +357,306 @@ async function uploadBatchDirectly(formData, fileOptions) {
     dubVoice: formData.get("dubVoice"),
     outputCount: formData.get("outputCount"),
   };
-  return fetch("/api/projects/cloud", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(settings),
-  });
 }
 
-function uploadFileDirectly(url, file, type, onProgress) {
+async function runManagedUploadSession(sessionId) {
+  const session = uploadManager.sessions.get(sessionId);
+  if (!session) return;
+  const results = [];
+  let nextIndex = 0;
+  const workerCount = Math.min(2, session.files.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < session.files.length && !uploadManager.cancelled) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const fileState = session.files[index];
+      if (fileState.projectId || fileState.status === "cancelled") continue;
+      const result = await uploadManagedFile(session, fileState);
+      if (result?.id) {
+        results.push(result.id);
+        currentProjects = [...new Set([...currentProjects, result.id])];
+        pollProjects();
+      }
+    }
+  }));
+  if (results.length) {
+    $("#processingSummary").textContent = "Upload complete. KlipPharma will keep processing—even if you close this page.";
+    renderGlobalUploadManager();
+  }
+}
+
+async function uploadManagedFile(session, fileState) {
+  const file = uploadManager.fileHandles.get(fileState.id);
+  if (!file) {
+    fileState.status = "interrupted";
+    fileState.error = "Upload interrupted — reopen KlipPharma and reselect this file to resume.";
+    renderManagedUploadSession(session);
+    persistUploadManagerSnapshot();
+    throw new Error(`${fileState.name} needs to be reselected before it can resume.`);
+  }
+  const completed = new Set((fileState.completedParts || []).map((part) => Number(part.partNumber)));
+  for (let partNumber = 1; partNumber <= fileState.totalParts; partNumber += 1) {
+    if (uploadManager.cancelled || fileState.status === "cancelled") throw new Error("Upload cancelled.");
+    while (uploadManager.paused || fileState.status === "paused") {
+      fileState.status = "paused";
+      renderManagedUploadSession(session);
+      await waitForUploadRetry(400);
+    }
+    if (completed.has(partNumber)) continue;
+    await uploadManagedPartWithRetry(session, fileState, file, partNumber);
+  }
+  const response = await fetch(`/api/uploads/sessions/${session.id}/files/${fileState.id}/complete`, { method: "POST" });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `Could not finalize ${fileState.name}.`);
+  mergeUploadSession(data.session);
+  renderManagedUploadSession(uploadManager.sessions.get(session.id));
+  renderGlobalUploadManager();
+  persistUploadManagerSnapshot();
+  return data;
+}
+
+async function uploadManagedPartWithRetry(session, fileState, file, partNumber) {
+  const attempts = 3;
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const start = (partNumber - 1) * fileState.partSize;
+      const end = Math.min(fileState.size, start + fileState.partSize);
+      const presign = await fetch(`/api/uploads/sessions/${session.id}/files/${fileState.id}/parts/${partNumber}`, { method: "POST" });
+      const prepared = await presign.json();
+      if (!presign.ok) throw new Error(prepared.error || `Could not prepare ${fileState.name}.`);
+      const etag = await uploadPartDirectly(prepared.uploadUrl, file.slice(start, end), fileState.type, (loaded) => {
+        const committed = (fileState.completedParts || []).reduce((sum, part) => sum + Number(part.size || 0), 0);
+        fileState.uploadedBytes = Math.min(fileState.size, committed + loaded);
+        fileState.status = "uploading";
+        renderManagedUploadSession(session);
+        renderGlobalUploadManager();
+      });
+      const record = await fetch(`/api/uploads/sessions/${session.id}/files/${fileState.id}/parts/${partNumber}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ etag, size: end - start }),
+      });
+      const data = await record.json();
+      if (!record.ok) throw new Error(data.error || `Could not record ${fileState.name}.`);
+      mergeUploadSession(data.session);
+      persistUploadManagerSnapshot();
+      return;
+    } catch (error) {
+      lastError = error;
+      fileState.retryCount = Number(fileState.retryCount || 0) + 1;
+      if (attempt < attempts) await waitForUploadRetry(700 * attempt);
+    }
+  }
+  fileState.status = "failed";
+  fileState.error = lastError?.message || "Upload failed.";
+  renderManagedUploadSession(session);
+  persistUploadManagerSnapshot();
+  throw lastError;
+}
+
+function uploadPartDirectly(url, blob, type, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", url);
-    xhr.setRequestHeader("Content-Type", type || file.type || "application/octet-stream");
+    xhr.setRequestHeader("Content-Type", type || "application/octet-stream");
     xhr.upload.addEventListener("progress", (event) => {
       if (event.lengthComputable) onProgress(event.loaded);
     });
     xhr.addEventListener("load", () => {
       if (xhr.status >= 200 && xhr.status < 300) {
-        onProgress(file.size);
-        resolve();
+        onProgress(blob.size);
+        resolve((xhr.getResponseHeader("ETag") || "").replace(/^"+|"+$/g, ""));
       } else {
-        reject(new Error(`Cloud upload failed for ${file.name}. Check the R2 CORS policy.`));
+        reject(new Error(`Cloud upload part failed with HTTP ${xhr.status || "unknown"}.`));
       }
     });
-    xhr.addEventListener("error", () => reject(new Error(`The cloud upload connection failed for ${file.name}.`)));
-    xhr.send(file);
+    xhr.addEventListener("error", () => reject(new Error("Upload interrupted — reconnect to resume.")));
+    xhr.addEventListener("abort", () => reject(new Error("The upload was canceled.")));
+    xhr.send(blob);
   });
 }
+
+function mergeUploadSession(session) {
+  if (!session?.id) return null;
+  const current = uploadManager.sessions.get(session.id);
+  if (current) {
+    session.files.forEach((file) => {
+      if (uploadManager.fileHandles.has(file.id)) return;
+      const existing = current.files?.find((item) => item.id === file.id);
+      if (existing && uploadManager.fileHandles.has(existing.id)) {
+        uploadManager.fileHandles.set(file.id, uploadManager.fileHandles.get(existing.id));
+      }
+    });
+  }
+  uploadManager.sessions.set(session.id, session);
+  return session;
+}
+
+function renderManagedUploadSession(session) {
+  if (!session) return;
+  const totalByFile = session.files.map((file) => file.size);
+  const loadedByFile = session.files.map((file) => Math.min(file.size, Number(file.uploadedBytes || 0)));
+  const uploaded = loadedByFile.reduce((sum, value) => sum + value, 0);
+  const total = totalByFile.reduce((sum, value) => sum + value, 0);
+  const percent = total ? Math.min(100, Math.round((uploaded / total) * 100)) : 0;
+  const uploadComplete = session.files.every((file) => file.projectId || file.status === "queued_for_processing");
+  $("#stage").textContent = uploadComplete ? "Queued for processing — safe to leave" : "Uploading from this device";
+  $("#progressBar").style.width = `${percent}%`;
+  $("#progressText").textContent = `${percent}% uploaded · ${formatBytes(uploaded)} of ${formatBytes(total)}`;
+  $("#processingSummary").textContent = uploadComplete
+    ? "Upload complete. KlipPharma will keep processing—even if you close this page."
+    : "Keep your browser active until the upload completes. You can use other KlipPharma screens.";
+  const statusBox = $("#batchStatus");
+  statusBox.innerHTML = "";
+  session.files.forEach((file) => {
+    const filePercent = file.size ? Math.min(100, Math.round((Number(file.uploadedBytes || 0) / file.size) * 100)) : 0;
+    const row = document.createElement("div");
+    row.className = `batch-row ${uploadRowClass(file.status)}`;
+    row.innerHTML = `<span class="batch-row-main"><b class="batch-row-name"></b><small class="batch-row-stage"></small></span><strong class="batch-row-status"></strong><span class="batch-row-progress"><i style="width:${filePercent}%"></i></span>`;
+    row.querySelector(".batch-row-name").textContent = file.name;
+    row.querySelector(".batch-row-stage").textContent = uploadStateCopy(file);
+    row.querySelector(".batch-row-status").textContent = file.projectId ? "Queued" : `${filePercent}%`;
+    if (file.error) {
+      const error = document.createElement("p");
+      error.className = "batch-row-error";
+      error.textContent = file.error;
+      row.append(error);
+    }
+    statusBox.append(row);
+  });
+}
+
+function uploadRowClass(status) {
+  if (status === "failed" || status === "interrupted") return "failed";
+  if (status === "queued_for_processing") return "queued";
+  return "uploading";
+}
+
+function uploadStateCopy(file) {
+  if (file.projectId || file.status === "queued_for_processing") return "Queued for processing — safe to leave";
+  if (file.status === "uploaded") return "Upload complete";
+  if (file.status === "paused") return "Upload paused";
+  if (file.status === "interrupted") return "Upload interrupted — reconnect to resume";
+  if (file.status === "failed") return file.error || "Failed";
+  if (file.status === "ready_to_upload" || file.status === "preparing") return "Preparing upload";
+  return `Uploading from this device · ${formatBytes(file.uploadedBytes || 0)} of ${formatBytes(file.size)}`;
+}
+
+function renderGlobalUploadManager() {
+  const session = uploadManager.sessions.get(uploadManager.activeSessionId) || [...uploadManager.sessions.values()][0];
+  if (!session) {
+    globalUploadManagerPanel?.classList.add("hidden");
+    return;
+  }
+  const total = session.files.reduce((sum, file) => sum + Number(file.size || 0), 0);
+  const loaded = session.files.reduce((sum, file) => sum + Math.min(Number(file.size || 0), Number(file.uploadedBytes || 0)), 0);
+  const percent = total ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
+  const completeCount = session.files.filter((file) => file.projectId || file.status === "queued_for_processing").length;
+  const active = session.files.some((file) => ["uploading", "ready_to_upload", "preparing", "paused", "interrupted"].includes(file.status));
+  globalUploadManagerPanel?.classList.toggle("hidden", !active && completeCount === 0);
+  $("#globalUploadState").textContent = active ? "UPLOADS ACTIVE" : "PROCESSING";
+  $("#globalUploadTitle").textContent = `${completeCount} of ${session.files.length} queued for processing`;
+  $("#globalUploadDetail").textContent = active
+    ? `Keep your browser active until upload completes. ${formatBytes(loaded)} of ${formatBytes(total)} transferred.`
+    : "Upload complete. KlipPharma will keep processing—even if you close this page.";
+  $("#globalUploadMeter").style.width = `${percent}%`;
+  globalUploadPause.disabled = uploadManager.paused || !active;
+  globalUploadResume.disabled = !uploadManager.paused;
+  globalUploadCancel.disabled = !active;
+}
+
+function persistUploadManagerSnapshot() {
+  const sessions = [...uploadManager.sessions.values()].map((session) => ({
+    ...session,
+    files: session.files.map((file) => ({ ...file, needsReselect: !file.projectId && !uploadManager.fileHandles.has(file.id) })),
+  }));
+  localStorage.setItem("klippharmaUploadSessions", JSON.stringify({ activeSessionId: uploadManager.activeSessionId, sessions }));
+}
+
+function restoreUploadManagerSnapshot() {
+  try {
+    const snapshot = JSON.parse(localStorage.getItem("klippharmaUploadSessions") || "{}");
+    uploadManager.activeSessionId = snapshot.activeSessionId || null;
+    (snapshot.sessions || []).forEach((session) => uploadManager.sessions.set(session.id, session));
+    renderGlobalUploadManager();
+  } catch {
+    localStorage.removeItem("klippharmaUploadSessions");
+  }
+}
+
+async function loadActiveUploadSessions() {
+  try {
+    const response = await fetch("/api/uploads/sessions");
+    const data = await response.json();
+    if (!response.ok) return;
+    (data.sessions || []).forEach((session) => {
+      mergeUploadSession(session);
+      if (!uploadManager.activeSessionId) uploadManager.activeSessionId = session.id;
+    });
+    persistUploadManagerSnapshot();
+    renderGlobalUploadManager();
+  } catch {
+    renderGlobalUploadManager();
+  }
+}
+
+function bindSelectedFilesToInterruptedUploads(files) {
+  if (!files?.length) return;
+  let resumedSessionId = null;
+  for (const session of uploadManager.sessions.values()) {
+    for (const fileState of session.files || []) {
+      if (fileState.projectId || uploadManager.fileHandles.has(fileState.id)) continue;
+      const match = files.find((file) => (
+        file.name === fileState.name
+        && file.size === fileState.size
+        && (!fileState.lastModified || file.lastModified === fileState.lastModified)
+        && (!fileState.type || fileState.type === "application/octet-stream" || !file.type || file.type === fileState.type)
+      ));
+      if (!match) continue;
+      uploadManager.fileHandles.set(fileState.id, match);
+      if (fileState.status === "interrupted") fileState.status = fileState.uploadedBytes ? "uploading" : "ready_to_upload";
+      fileState.error = null;
+      resumedSessionId = session.id;
+    }
+  }
+  if (!resumedSessionId) return;
+  uploadManager.activeSessionId = resumedSessionId;
+  uploadManager.paused = false;
+  uploadManager.cancelled = false;
+  const session = uploadManager.sessions.get(resumedSessionId);
+  persistUploadManagerSnapshot();
+  renderManagedUploadSession(session);
+  renderGlobalUploadManager();
+  toast("Matched the interrupted upload. Resuming from completed parts.");
+  setView("processing");
+  runManagedUploadSession(resumedSessionId).catch((error) => toast(error.message || "Could not resume upload."));
+}
+
+async function updateActiveUploadFiles(action) {
+  const session = uploadManager.sessions.get(uploadManager.activeSessionId);
+  if (!session) return;
+  if (action === "pause") uploadManager.paused = true;
+  if (action === "resume") uploadManager.paused = false;
+  if (action === "cancel") {
+    uploadManager.cancelled = true;
+    if (!window.confirm("Cancel the active upload batch? Already queued projects will continue processing.")) {
+      uploadManager.cancelled = false;
+      return;
+    }
+  }
+  const activeFiles = session.files.filter((file) => !file.projectId && file.status !== "cancelled");
+  await Promise.all(activeFiles.map(async (file) => {
+    const response = await fetch(`/api/uploads/sessions/${session.id}/files/${file.id}/${action}`, { method: "POST" });
+    const data = await response.json().catch(() => ({}));
+    if (response.ok && data.session) mergeUploadSession(data.session);
+  }));
+  renderManagedUploadSession(uploadManager.sessions.get(session.id));
+  renderGlobalUploadManager();
+  persistUploadManagerSnapshot();
+  if (action === "resume") runManagedUploadSession(session.id).catch((error) => toast(error.message || "Could not resume upload."));
+}
+
 
 function renderUploadTransfer(loadedByFile, totalByFile, label) {
   const loaded = loadedByFile.reduce((sum, value) => sum + Number(value || 0), 0);
@@ -394,6 +699,7 @@ async function pollProjects() {
       if (!response.ok) throw new Error(project.error || "Could not load a project.");
       return project;
     }));
+    notifyReadyProjects(projects);
     renderBatchStatus(projects);
     const sourcesFinished = projects.every((project) => project.status === "ready" || project.status === "failed" || project.status === "source_auth_required");
     const montage = projects.find((project) => project.montage)?.montage;
@@ -501,6 +807,20 @@ function renderBatchStatus(projects) {
     }
     statusBox.append(row);
   });
+}
+
+function notifyReadyProjects(projects) {
+  let changed = false;
+  projects
+    .filter((project) => project.status === "ready" && !uploadManager.readyNotified.has(project.id))
+    .forEach((project) => {
+      uploadManager.readyNotified.add(project.id);
+      changed = true;
+      toast(`${project.originalName || "Your project"} is ready.`);
+    });
+  if (changed) {
+    localStorage.setItem("klippharmaReadyNotified", JSON.stringify([...uploadManager.readyNotified].slice(-100)));
+  }
 }
 
 function renderResults(projects) {
@@ -3890,6 +4210,7 @@ async function bootstrapApplication() {
       showApplication(data.user);
       loadBillingStatus();
       if (await acceptPendingInvitation()) return;
+      await loadActiveUploadSessions();
       await loadRecentProjects();
       handleStartupParameters();
     } else {
@@ -3939,6 +4260,7 @@ function showApplication(user) {
     : String(user?.planTier || "free").toUpperCase();
   $("#logoutButton").classList.toggle("hidden", Boolean(user?.local));
   accountMenu.classList.remove("hidden");
+  renderGlobalUploadManager();
 }
 
 function showAuthentication() {

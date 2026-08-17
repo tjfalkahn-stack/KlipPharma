@@ -113,10 +113,77 @@ test("prevents invalid file substitution during resume", () => {
 
 test("migration contains production constraints, indexes, idempotency, and processing lease columns", () => {
   const migration = fs.readFileSync(path.resolve("migrations/202608160001_upload_sessions.sql"), "utf8");
+  const database = fs.readFileSync(path.resolve("lib/database.js"), "utf8");
   assert.match(migration, /CREATE TABLE IF NOT EXISTS upload_sessions/i);
   assert.match(migration, /REFERENCES users\(id\) ON DELETE CASCADE/i);
   assert.match(migration, /CHECK \(status IN/i);
   assert.match(migration, /upload_sessions_user_idempotency_idx/i);
   assert.match(migration, /processing_lease_owner/i);
   assert.match(migration, /processing_lease_expires_at/i);
+  assert.doesNotMatch(migration, /ALTER TABLE projects ADD COLUMN IF NOT EXISTS status\b/i);
+  assert.doesNotMatch(migration, /ON projects\s*\(\s*status\b/i);
+  assert.match(migration, /ON projects\(\(COALESCE\(data ->> 'status', ''\)\), processing_lease_expires_at\)/i);
+  assert.match(migration, /WHERE COALESCE\(data ->> 'status', ''\) IN \('queued', 'processing'\)/i);
+  assert.match(database, /AND COALESCE\(data ->> 'status', ''\) IN \('queued', 'processing'\)/i);
+  assert.doesNotMatch(database, /projects[\s\S]{0,240}\bstatus\s*=/i);
 });
+
+test("durable upload migration stays compatible with the production-shaped projects table", () => {
+  const database = fs.readFileSync(path.resolve("lib/database.js"), "utf8");
+  const projectTable = database.match(/CREATE TABLE IF NOT EXISTS projects \(([\s\S]*?)\n    \);/i)?.[1] || "";
+  assert.match(projectTable, /\bid UUID PRIMARY KEY\b/i);
+  assert.match(projectTable, /\bdata JSONB NOT NULL\b/i);
+  assert.doesNotMatch(projectTable, /\bstatus TEXT\b/i);
+
+  const migration = fs.readFileSync(path.resolve("migrations/202608160001_upload_sessions.sql"), "utf8");
+  const idempotentStatements = [
+    /CREATE TABLE IF NOT EXISTS upload_sessions/i,
+    /CREATE INDEX IF NOT EXISTS upload_sessions_user_status_idx/i,
+    /CREATE INDEX IF NOT EXISTS upload_sessions_batch_idx/i,
+    /CREATE INDEX IF NOT EXISTS upload_sessions_expiry_idx/i,
+    /CREATE UNIQUE INDEX IF NOT EXISTS upload_sessions_user_idempotency_idx/i,
+    /ALTER TABLE projects ADD COLUMN IF NOT EXISTS processing_lease_owner/i,
+    /ALTER TABLE projects ADD COLUMN IF NOT EXISTS processing_lease_expires_at/i,
+    /ALTER TABLE projects ADD COLUMN IF NOT EXISTS processing_claimed_at/i,
+    /ALTER TABLE projects ADD COLUMN IF NOT EXISTS processing_completed_at/i,
+    /CREATE INDEX IF NOT EXISTS projects_processing_claim_idx/i,
+  ];
+  for (const pattern of idempotentStatements) assert.match(migration, pattern);
+});
+
+test("processing lease claims use project data status for duplicate prevention and recovery", () => {
+  const now = Date.parse("2026-08-16T10:00:00.000Z");
+  const project = {
+    id: "project-1",
+    userId: "user-1",
+    data: { status: "queued" },
+    processingLeaseOwner: null,
+    processingLeaseExpiresAt: null,
+  };
+
+  assert.equal(claimProcessingLease(project, { projectId: "project-1", userId: "user-1", owner: "worker-a", now }), true);
+  assert.equal(project.processingLeaseOwner, "worker-a");
+  assert.equal(claimProcessingLease(project, { projectId: "project-1", userId: "user-1", owner: "worker-b", now }), false);
+  assert.equal(claimProcessingLease(project, { projectId: "project-1", userId: "user-1", owner: "worker-a", now }), true);
+
+  const afterExpiry = now + 901_000;
+  assert.equal(claimProcessingLease(project, { projectId: "project-1", userId: "user-1", owner: "worker-b", now: afterExpiry }), true);
+  assert.equal(project.processingLeaseOwner, "worker-b");
+
+  project.data.status = "ready";
+  project.processingLeaseExpiresAt = new Date(afterExpiry - 1).toISOString();
+  assert.equal(claimProcessingLease(project, { projectId: "project-1", userId: "user-1", owner: "worker-c", now: afterExpiry }), false);
+});
+
+function claimProcessingLease(project, { projectId, userId, owner, now, leaseSeconds = 15 * 60 }) {
+  const status = String(project.data?.status || "");
+  const leaseExpiresAt = Date.parse(project.processingLeaseExpiresAt || "");
+  const leaseAvailable = !Number.isFinite(leaseExpiresAt) || leaseExpiresAt < now || project.processingLeaseOwner === owner;
+  if (project.id !== projectId || project.userId !== userId || !leaseAvailable || !["queued", "processing"].includes(status)) {
+    return false;
+  }
+  project.processingLeaseOwner = owner;
+  project.processingLeaseExpiresAt = new Date(now + Math.max(60, Number(leaseSeconds) || 900) * 1000).toISOString();
+  project.processingClaimedAt = new Date(now).toISOString();
+  return true;
+}

@@ -46,7 +46,7 @@ ALTER TABLE projects ADD COLUMN IF NOT EXISTS processing_claimed_at TIMESTAMPTZ;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS processing_completed_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS projects_processing_claim_idx
-  ON projects(status, processing_lease_expires_at)
-  WHERE status IN ('queued', 'processing');
+  ON projects((COALESCE(data ->> 'status', '')), processing_lease_expires_at)
+  WHERE COALESCE(data ->> 'status', '') IN ('queued', 'processing');
 
 COMMIT;

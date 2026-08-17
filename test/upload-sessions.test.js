@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  initializeUploadPersistenceSchema,
+} from "../lib/database.js";
+import {
   assertUploadFileIdentity,
   attachMultipartUpload,
   canAccessUploadSession,
@@ -149,6 +152,49 @@ test("durable upload migration stays compatible with the production-shaped proje
     /CREATE INDEX IF NOT EXISTS projects_processing_claim_idx/i,
   ];
   for (const pattern of idempotentStatements) assert.match(migration, pattern);
+});
+
+test("startup bootstrap creates upload persistence schema before schema assertion", async () => {
+  const queries = [];
+  await initializeUploadPersistenceSchema({ query: async (sql) => queries.push(sql) });
+  assert.equal(queries.length, 1);
+  assert.match(queries[0], /CREATE TABLE IF NOT EXISTS upload_sessions/i);
+  assert.match(queries[0], /ALTER TABLE projects ADD COLUMN IF NOT EXISTS processing_lease_owner/i);
+  assert.match(queries[0], /CREATE INDEX IF NOT EXISTS projects_processing_claim_idx/i);
+});
+
+test("startup upload persistence bootstrap is safe to run repeatedly", async () => {
+  const queries = [];
+  const fakePool = { query: async (sql) => queries.push(sql) };
+  await initializeUploadPersistenceSchema(fakePool);
+  await initializeUploadPersistenceSchema(fakePool);
+  assert.equal(queries.length, 2);
+  for (const sql of queries) {
+    assert.match(sql, /CREATE TABLE IF NOT EXISTS upload_sessions/i);
+    assert.match(sql, /CREATE INDEX IF NOT EXISTS upload_sessions_user_status_idx/i);
+    assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS upload_sessions_user_idempotency_idx/i);
+    assert.match(sql, /ALTER TABLE projects ADD COLUMN IF NOT EXISTS processing_lease_expires_at/i);
+  }
+});
+
+test("startup upload persistence bootstrap preserves existing production data", async () => {
+  const queries = [];
+  await initializeUploadPersistenceSchema({ query: async (sql) => queries.push(sql) });
+  const sql = queries.join("\n");
+  assert.doesNotMatch(sql, /\bDROP\b/i);
+  assert.doesNotMatch(sql, /\bTRUNCATE\b/i);
+  assert.doesNotMatch(sql, /\bDELETE\s+FROM\s+(users|projects|upload_sessions|workspaces)\b/i);
+  assert.doesNotMatch(sql, /\bUPDATE\s+(users|projects|upload_sessions|workspaces)\b/i);
+});
+
+test("startup bootstrap uses JSONB project status for the production processing index", async () => {
+  const queries = [];
+  await initializeUploadPersistenceSchema({ query: async (sql) => queries.push(sql) });
+  const sql = queries.join("\n");
+  assert.match(sql, /ON projects\(\(COALESCE\(data ->> 'status', ''\)\), processing_lease_expires_at\)/i);
+  assert.match(sql, /WHERE COALESCE\(data ->> 'status', ''\) IN \('queued', 'processing'\)/i);
+  assert.doesNotMatch(sql, /ON projects\s*\(\s*status\b/i);
+  assert.doesNotMatch(sql, /ALTER TABLE projects ADD COLUMN IF NOT EXISTS status\b/i);
 });
 
 test("processing lease claims use project data status for duplicate prevention and recovery", () => {

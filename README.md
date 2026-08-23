@@ -4,6 +4,13 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
+## Version 0.29.6 — Upload recovery and mobile session repair
+
+- Expired mobile sessions return to the sign-in screen instead of leaving the editor open behind an `Unauthorized` toast.
+- Protected API requests consistently show a clear sign-in-again message when the session has ended.
+- Mobile pages are pinned to the viewport width so the headline and creator workflow cannot remain horizontally shifted or clipped.
+- Invalid or expired R2 credentials no longer strand a creator after file selection; KlipPharma automatically falls back to its standard authenticated upload route.
+
 ## Version 0.29.2 — Silent camera-roll video handling
 
 - Video-only MP4/MOV files no longer fail during audio extraction.

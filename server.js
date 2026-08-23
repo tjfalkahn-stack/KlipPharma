@@ -136,6 +136,7 @@ const uploadSessions = new Map();
 const previewTasks = new Map();
 const batchMontageTasks = new Map();
 const processingQueue = [];
+const processingLeaseRetryTimers = new Map();
 const authAttempts = new Map();
 const oauthStates = new Map();
 const localSocialConnections = new Map();
@@ -1806,8 +1807,22 @@ function createProjectBatch(req, files, fileOptions = []) {
 }
 
 function enqueueProject(job) {
+  if (!job || job.status !== "queued") return;
+  if (processingQueue.some((item) => item.id === job.id)) return;
   processingQueue.push(job);
   runNextProjects();
+}
+
+function scheduleProcessingLeaseRetry(job, delayMs = 30_000) {
+  if (!job?.id || processingLeaseRetryTimers.has(job.id)) return;
+  job.stage = "Waiting for the previous processor lease to clear";
+  persistJob(job);
+  const timer = setTimeout(() => {
+    processingLeaseRetryTimers.delete(job.id);
+    if (job.status === "queued") enqueueProject(job);
+  }, delayMs);
+  timer.unref?.();
+  processingLeaseRetryTimers.set(job.id, timer);
 }
 
 function runNextProjects() {
@@ -1843,7 +1858,7 @@ function runNextProjects() {
 async function processClaimedProject(job) {
   const claimed = await claimDatabaseProjectProcessingLease(job.id, job.userId, processingLeaseOwner);
   if (!claimed) {
-    job.stage = "Processing claimed by another worker";
+    scheduleProcessingLeaseRetry(job);
     return;
   }
   try {
@@ -4342,17 +4357,27 @@ async function loadPostgresJobs() {
 }
 
 function restoreInterruptedProject(job) {
-  if (job.status === "queued" || job.status === "processing") {
-    const sourceCanRecover = Boolean(job.objectKey || (job.filePath && fs.existsSync(job.filePath)));
+  const sourceCanRecover = Boolean(job.objectKey || (job.filePath && fs.existsSync(job.filePath)));
+  const recoverApiAuthenticationFailure = job.status === "failed"
+    && /API key could not be authenticated/i.test(String(job.error || ""))
+    && Number(job.apiAuthenticationRetryCount || 0) < 1
+    && sourceCanRecover;
+  if (job.status === "queued" || job.status === "processing" || recoverApiAuthenticationFailure) {
     if (sourceCanRecover) {
       Object.assign(job, {
         status: "queued",
         progress: 2,
         phase: "queued",
-        stage: "Recovered after restart · waiting for the processor",
+        stage: recoverApiAuthenticationFailure
+          ? "AI credentials updated · retrying without another upload"
+          : "Recovered after restart · waiting for the processor",
         resumeAfterRestart: true,
+        apiAuthenticationRetryCount: recoverApiAuthenticationFailure
+          ? Number(job.apiAuthenticationRetryCount || 0) + 1
+          : Number(job.apiAuthenticationRetryCount || 0),
       });
       delete job.error;
+      delete job.failedAt;
     } else {
       Object.assign(job, {
         status: "failed",

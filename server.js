@@ -8,6 +8,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
@@ -67,6 +69,7 @@ import {
   createUploadSession,
   findUploadFile,
   markUploadFileCompleted,
+  objectKeyForUploadFile,
   recordUploadPart,
   refreshSessionStatus,
   setUploadFileStatus,
@@ -1213,8 +1216,117 @@ app.get("/api/uploads/sessions", (req, res) => {
   res.json({ sessions });
 });
 
+function prepareLocalUploadSession(userId, session) {
+  session.storageMode = "local";
+  for (const file of session.files) {
+    file.completedParts = [];
+    file.uploadedBytes = 0;
+    file.storageMode = "local";
+    attachMultipartUpload(file, {
+      uploadId: `local-${session.id}-${file.id}`,
+      objectKey: objectKeyForUploadFile(userId, session.batchId, file.id, file.name),
+    });
+  }
+  return session;
+}
+
+async function abortPreparedCloudUploads(userId, session) {
+  for (const file of session.files || []) {
+    if (!file.objectKey || !file.uploadId || file.storageMode === "local") continue;
+    try {
+      await abortMultipartUpload(userId, { objectKey: file.objectKey, uploadId: file.uploadId });
+    } catch (error) {
+      console.error(`Could not abort incomplete cloud upload ${session.id}/${file.id}:`, error.message);
+    }
+  }
+}
+
+function isLocalUploadFile(session, file) {
+  return session?.storageMode === "local" || file?.storageMode === "local" || String(file?.uploadId || "").startsWith("local-");
+}
+
+function validatedUploadPartNumber(file, value) {
+  const partNumber = Number(value);
+  if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > Number(file.totalParts || 0)) {
+    throw new Error("Upload part number is invalid.");
+  }
+  return partNumber;
+}
+
+function expectedUploadPartSize(file, partNumber) {
+  const start = (partNumber - 1) * Number(file.partSize);
+  return Math.min(Number(file.partSize), Number(file.size) - start);
+}
+
+function localUploadPartPath(session, file, partNumber) {
+  return path.join(uploadSessionsDir, `${session.id}-${file.id}-${partNumber}.upload-part`);
+}
+
+function localUploadDestination(file) {
+  return path.join(uploadDir, path.basename(file.objectKey));
+}
+
+async function writeLocalUploadPart(request, destination, expectedSize) {
+  const temporary = `${destination}.${crypto.randomUUID()}.tmp`;
+  const hash = crypto.createHash("sha256");
+  let received = 0;
+  const verifier = new Transform({
+    transform(chunk, _encoding, callback) {
+      received += chunk.length;
+      if (received > expectedSize) return callback(new Error("That upload part is larger than expected."));
+      hash.update(chunk);
+      callback(null, chunk);
+    },
+  });
+  try {
+    await pipeline(request, verifier, fs.createWriteStream(temporary, { flags: "wx" }));
+    if (received !== expectedSize) throw new Error("That upload part did not finish transferring. Retry it.");
+    fs.renameSync(temporary, destination);
+    return hash.digest("hex");
+  } catch (error) {
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+    throw error;
+  }
+}
+
+async function assembleLocalUpload(session, file) {
+  const destination = localUploadDestination(file);
+  const temporary = `${destination}.${crypto.randomUUID()}.assembling`;
+  try {
+    for (let partNumber = 1; partNumber <= file.totalParts; partNumber += 1) {
+      const partPath = localUploadPartPath(session, file, partNumber);
+      if (!fs.existsSync(partPath) || fs.statSync(partPath).size !== expectedUploadPartSize(file, partNumber)) {
+        throw new Error(`Upload part ${partNumber} is incomplete. Retry the upload.`);
+      }
+      await pipeline(
+        fs.createReadStream(partPath),
+        fs.createWriteStream(temporary, { flags: partNumber === 1 ? "w" : "a" }),
+      );
+    }
+    const size = fs.statSync(temporary).size;
+    if (size !== Number(file.size)) throw new Error("The uploaded source size did not match the selected file.");
+    fs.renameSync(temporary, destination);
+    for (let partNumber = 1; partNumber <= file.totalParts; partNumber += 1) {
+      const partPath = localUploadPartPath(session, file, partNumber);
+      if (fs.existsSync(partPath)) fs.unlinkSync(partPath);
+    }
+    return { size, type: file.type || "application/octet-stream" };
+  } catch (error) {
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+    throw error;
+  }
+}
+
+function removeLocalUploadArtifacts(session, file) {
+  for (let partNumber = 1; partNumber <= Number(file.totalParts || 0); partNumber += 1) {
+    const partPath = localUploadPartPath(session, file, partNumber);
+    if (fs.existsSync(partPath)) fs.unlinkSync(partPath);
+  }
+  const destination = file.objectKey ? localUploadDestination(file) : null;
+  if (destination && fs.existsSync(destination)) fs.unlinkSync(destination);
+}
+
 app.post("/api/uploads/sessions", async (req, res) => {
-  if (!objectStorageConfigured) return res.status(409).json({ error: "Resumable cloud uploads are not enabled on this installation." });
   try {
     await ensureProductionUploadPersistence();
     const session = createUploadSession({
@@ -1226,21 +1338,26 @@ app.post("/api/uploads/sessions", async (req, res) => {
       partSize: uploadLimits.partSize,
       limits: uploadLimits,
     });
-    for (const file of session.files) {
-      attachMultipartUpload(file, await createMultipartUpload(req.user.id, file, { batchId: session.batchId, fileId: file.id }));
+    if (objectStorageConfigured) {
+      try {
+        for (const file of session.files) {
+          attachMultipartUpload(file, await createMultipartUpload(req.user.id, file, { batchId: session.batchId, fileId: file.id }));
+        }
+        session.storageMode = "cloud";
+      } catch (error) {
+        if (!isObjectStorageAuthorizationError(error)) throw error;
+        console.error("Cloud upload authorization failed. Using chunked application storage until the R2 token is replaced.");
+        await abortPreparedCloudUploads(req.user.id, session);
+        prepareLocalUploadSession(req.user.id, session);
+      }
+    } else {
+      prepareLocalUploadSession(req.user.id, session);
     }
     refreshSessionStatus(session);
     uploadSessions.set(session.id, session);
     await persistUploadSession(session, { requireDatabase: true });
     res.status(201).json({ session: uploadSessionForClient(session) });
   } catch (error) {
-    if (isObjectStorageAuthorizationError(error)) {
-      console.error("Cloud upload authorization failed. Replace the configured R2 access token.");
-      return res.status(503).json({
-        error: "Cloud uploads are temporarily unavailable.",
-        code: "CLOUD_UPLOAD_UNAVAILABLE",
-      });
-    }
     res.status(400).json({ error: error.message || "Could not create an upload session." });
   }
 });
@@ -1259,6 +1376,15 @@ app.post("/api/uploads/sessions/:sessionId/files/:fileId/parts/:partNumber", asy
     if (file.status === "cancelled") return res.status(409).json({ error: "This upload was cancelled." });
     if (file.status === "paused") return res.status(409).json({ error: "This upload is paused." });
     const partNumber = Number(req.params.partNumber);
+    if (isLocalUploadFile(session, file)) {
+      setUploadFileStatus(session, file.id, "uploading");
+      await persistUploadSession(session, { requireDatabase: true });
+      return res.json({
+        uploadUrl: `/api/uploads/sessions/${session.id}/files/${file.id}/local-parts/${partNumber}`,
+        expiresIn: 15 * 60,
+        partNumber,
+      });
+    }
     const upload = await createMultipartPartUpload(req.user.id, {
       objectKey: file.objectKey,
       uploadId: file.uploadId,
@@ -1272,10 +1398,37 @@ app.post("/api/uploads/sessions/:sessionId/files/:fileId/parts/:partNumber", asy
   }
 });
 
+app.put("/api/uploads/sessions/:sessionId/files/:fileId/local-parts/:partNumber", async (req, res) => {
+  const session = await ownedUploadSession(req, req.params.sessionId);
+  if (!session) return res.status(404).json({ error: "Upload session not found." });
+  try {
+    const file = findUploadFile(session, req.params.fileId);
+    if (!isLocalUploadFile(session, file)) return res.status(409).json({ error: "This upload is not using application storage." });
+    if (file.status === "cancelled") return res.status(409).json({ error: "This upload was cancelled." });
+    if (file.status === "paused") return res.status(409).json({ error: "This upload is paused." });
+    const partNumber = validatedUploadPartNumber(file, req.params.partNumber);
+    const expectedSize = expectedUploadPartSize(file, partNumber);
+    const etag = await writeLocalUploadPart(req, localUploadPartPath(session, file, partNumber), expectedSize);
+    res.setHeader("ETag", `\"${etag}\"`);
+    res.status(200).end();
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Could not accept that upload part." });
+  }
+});
+
 app.patch("/api/uploads/sessions/:sessionId/files/:fileId/parts/:partNumber", async (req, res) => {
   const session = await ownedUploadSession(req, req.params.sessionId);
   if (!session) return res.status(404).json({ error: "Upload session not found." });
   try {
+    const currentFile = findUploadFile(session, req.params.fileId);
+    if (isLocalUploadFile(session, currentFile)) {
+      const partNumber = validatedUploadPartNumber(currentFile, req.params.partNumber);
+      const partPath = localUploadPartPath(session, currentFile, partNumber);
+      const storedSize = fs.existsSync(partPath) ? fs.statSync(partPath).size : 0;
+      if (storedSize !== expectedUploadPartSize(currentFile, partNumber) || storedSize !== Number(req.body.size)) {
+        return res.status(409).json({ error: "That upload part did not finish transferring. Retry it." });
+      }
+    }
     const file = recordUploadPart(session, req.params.fileId, {
       partNumber: req.params.partNumber,
       etag: req.body.etag,
@@ -1302,12 +1455,17 @@ app.post("/api/uploads/sessions/:sessionId/files/:fileId/complete", async (req, 
     if (file.status === "finalizing") return res.status(409).json({ error: "This upload is already being finalized." });
     setUploadFileStatus(session, file.id, "finalizing", { error: null });
     await persistUploadSession(session, { requireDatabase: true });
-    await completeMultipartUpload(req.user.id, {
-      objectKey: file.objectKey,
-      uploadId: file.uploadId,
-      parts: file.completedParts,
-    });
-    const stored = await verifyObject(req.user.id, file.objectKey);
+    let stored;
+    if (isLocalUploadFile(session, file)) {
+      stored = await assembleLocalUpload(session, file);
+    } else {
+      await completeMultipartUpload(req.user.id, {
+        objectKey: file.objectKey,
+        uploadId: file.uploadId,
+        parts: file.completedParts,
+      });
+      stored = await verifyObject(req.user.id, file.objectKey);
+    }
     if (!stored.size || stored.size > uploadLimits.maxFileBytes) throw new Error("The uploaded source could not be verified.");
     if (!isSupportedStoredMedia(file, stored)) throw new Error("The uploaded source type is not supported.");
     const result = createProjectFromUploadSessionFile(req, session, file, stored);
@@ -1332,7 +1490,8 @@ app.post("/api/uploads/sessions/:sessionId/files/:fileId/:action", async (req, r
     if (action === "pause") setUploadFileStatus(session, file.id, "paused");
     else if (action === "resume" || action === "retry") setUploadFileStatus(session, file.id, file.uploadedBytes ? "uploading" : "ready_to_upload", { error: null });
     else if (action === "cancel") {
-      await abortMultipartUpload(req.user.id, { objectKey: file.objectKey, uploadId: file.uploadId });
+      if (isLocalUploadFile(session, file)) removeLocalUploadArtifacts(session, file);
+      else await abortMultipartUpload(req.user.id, { objectKey: file.objectKey, uploadId: file.uploadId });
       setUploadFileStatus(session, file.id, "cancelled");
     } else {
       return res.status(404).json({ error: "Upload action not found." });
@@ -1518,7 +1677,7 @@ function createProjectFromUploadSessionFile(req, session, file, stored) {
     stage: "Queued for processing — safe to leave",
     originalName: file.name,
     filePath: path.join(uploadDir, path.basename(file.objectKey)),
-    objectKey: file.objectKey,
+    objectKey: isLocalUploadFile(session, file) ? null : file.objectKey,
     mimeType: stored.type || file.type,
     processingMode: file.transcribe === false ? "manual" : "ai",
     sourceLanguage: normalizeSourceLanguage(body.sourceLanguage),
@@ -4107,7 +4266,8 @@ async function cleanupAbandonedUploadSessions() {
     for (const file of session.files || []) {
       if (file.projectId || !file.objectKey || !file.uploadId || file.status === "queued_for_processing") continue;
       try {
-        await abortMultipartUpload(session.userId, { objectKey: file.objectKey, uploadId: file.uploadId });
+        if (isLocalUploadFile(session, file)) removeLocalUploadArtifacts(session, file);
+        else await abortMultipartUpload(session.userId, { objectKey: file.objectKey, uploadId: file.uploadId });
       } catch (error) {
         console.error(`Could not abort abandoned upload ${session.id}/${file.id}:`, error.message);
       }

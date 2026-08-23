@@ -4,6 +4,12 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
+## Version 0.29.7 — Reliable mobile fallback uploads
+
+- Replaced the single-request Railway fallback with retryable 8 MB same-origin chunks.
+- Uploads now stay resumable when the configured Cloudflare R2 token is rejected.
+- Local fallback parts are size-verified, assembled atomically, and cleaned up on cancellation or expiry.
+
 ## Version 0.29.6 — Upload recovery and mobile session repair
 
 - Expired mobile sessions return to the sign-in screen instead of leaving the editor open behind an `Unauthorized` toast.

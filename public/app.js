@@ -1,7 +1,44 @@
 const $ = (selector) => document.querySelector(selector);
-const ASSET_VERSION = "0.29.4";
+const ASSET_VERSION = "0.29.6";
 window.__KLIPPHARMA_ASSET_VERSION__ = ASSET_VERSION;
 console.info("[KlipPharma dashboard] asset loaded", { version: ASSET_VERSION, path: window.location.pathname });
+
+const nativeFetch = window.fetch.bind(window);
+let recoveringExpiredSession = false;
+
+function isProtectedApiRequest(input) {
+  try {
+    const rawUrl = typeof input === "string" ? input : input?.url;
+    const url = new URL(rawUrl, window.location.href);
+    return url.origin === window.location.origin
+      && url.pathname.startsWith("/api/")
+      && !url.pathname.startsWith("/api/auth/")
+      && url.pathname !== "/api/health";
+  } catch {
+    return false;
+  }
+}
+
+function recoverExpiredSession() {
+  if (recoveringExpiredSession || !currentUser) return;
+  recoveringExpiredSession = true;
+  clearTimeout(pollTimer);
+  clearTimeout(dashboardRefreshTimer);
+  clearTimeout(incomingRefreshTimer);
+  currentProjects = [];
+  billingState = null;
+  showAuthentication();
+  authError.textContent = "Your session expired. Sign in again to continue.";
+  authError.classList.remove("hidden");
+  window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  window.setTimeout(() => { recoveringExpiredSession = false; }, 500);
+}
+
+window.fetch = async (...args) => {
+  const response = await nativeFetch(...args);
+  if (response.status === 401 && isProtectedApiRequest(args[0])) recoverExpiredSession();
+  return response;
+};
 
 function logIncomingDashboardFetch(details) {
   console.info("[KlipPharma Incoming Projects]", details);
@@ -320,7 +357,14 @@ async function startManagedUploadBatch(formData, fileOptions) {
     }),
   });
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Could not prepare resumable uploads.");
+  if (!response.ok) {
+    if (data.code === "CLOUD_UPLOAD_UNAVAILABLE") {
+      uploadMode = "local";
+      toast("Cloud storage is reconnecting. Using the standard secure upload instead.");
+      return uploadBatchLocally(formData);
+    }
+    throw new Error(data.error || "Could not prepare resumable uploads.");
+  }
   const session = data.session;
   uploadManager.sessions.set(session.id, session);
   uploadManager.activeSessionId = session.id;
@@ -2432,7 +2476,10 @@ function normalizeClientColor(value) {
   const color = legacy[String(value || "").toLowerCase()] || String(value || "").trim();
   return /^#[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : "#ffffff";
 }
-function toast(message) { const el=$("#toast"); el.textContent=message; el.classList.remove("hidden"); setTimeout(()=>el.classList.add("hidden"),4000); }
+function toast(message) {
+  if (recoveringExpiredSession || /^(unauthorized|sign in to continue)\.?$/i.test(String(message || "").trim())) return;
+  const el=$("#toast"); el.textContent=message; el.classList.remove("hidden"); setTimeout(()=>el.classList.add("hidden"),4000);
+}
 
 authSwitch.addEventListener("click", () => {
   creatingAccount = !creatingAccount;
@@ -4249,6 +4296,7 @@ async function acceptPendingInvitation() {
 }
 
 function showApplication(user) {
+  recoveringExpiredSession = false;
   currentUser = user || null;
   authView.classList.add("hidden");
   appShell.classList.remove("hidden");

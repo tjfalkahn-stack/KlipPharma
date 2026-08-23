@@ -8,8 +8,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { Transform } from "node:stream";
-import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
@@ -60,7 +58,6 @@ import {
   createMultipartUpload,
   deleteObject,
   downloadObject,
-  isObjectStorageAuthorizationError,
   objectStorageConfigured,
   verifyObject,
 } from "./lib/object-storage.js";
@@ -69,7 +66,6 @@ import {
   createUploadSession,
   findUploadFile,
   markUploadFileCompleted,
-  objectKeyForUploadFile,
   recordUploadPart,
   refreshSessionStatus,
   setUploadFileStatus,
@@ -136,17 +132,11 @@ const uploadSessions = new Map();
 const previewTasks = new Map();
 const batchMontageTasks = new Map();
 const processingQueue = [];
-const processingLeaseRetryTimers = new Map();
 const authAttempts = new Map();
 const oauthStates = new Map();
 const localSocialConnections = new Map();
 const integrationAttempts = new Map();
-// Railway production has a small shared CPU budget. Running two projects while
-// each project also creates preview/audio FFmpeg workers can starve Express and
-// make the dashboard appear offline on mobile. Keep one project active by
-// default; larger deployments can opt in to two with PROCESSING_CONCURRENCY.
-const maxConcurrentProjects = Math.max(1, Math.min(2, Number.parseInt(process.env.PROCESSING_CONCURRENCY || "1", 10) || 1));
-const ffmpegThreadLimit = Math.max(1, Math.min(2, Number.parseInt(process.env.FFMPEG_THREADS || "1", 10) || 1));
+const maxConcurrentProjects = 2;
 const processingLeaseOwner = `${os.hostname()}-${process.pid}-${crypto.randomUUID()}`;
 const uploadLimits = {
   maxFiles: Number(process.env.UPLOAD_MAX_FILES || 10),
@@ -1222,117 +1212,8 @@ app.get("/api/uploads/sessions", (req, res) => {
   res.json({ sessions });
 });
 
-function prepareLocalUploadSession(userId, session) {
-  session.storageMode = "local";
-  for (const file of session.files) {
-    file.completedParts = [];
-    file.uploadedBytes = 0;
-    file.storageMode = "local";
-    attachMultipartUpload(file, {
-      uploadId: `local-${session.id}-${file.id}`,
-      objectKey: objectKeyForUploadFile(userId, session.batchId, file.id, file.name),
-    });
-  }
-  return session;
-}
-
-async function abortPreparedCloudUploads(userId, session) {
-  for (const file of session.files || []) {
-    if (!file.objectKey || !file.uploadId || file.storageMode === "local") continue;
-    try {
-      await abortMultipartUpload(userId, { objectKey: file.objectKey, uploadId: file.uploadId });
-    } catch (error) {
-      console.error(`Could not abort incomplete cloud upload ${session.id}/${file.id}:`, error.message);
-    }
-  }
-}
-
-function isLocalUploadFile(session, file) {
-  return session?.storageMode === "local" || file?.storageMode === "local" || String(file?.uploadId || "").startsWith("local-");
-}
-
-function validatedUploadPartNumber(file, value) {
-  const partNumber = Number(value);
-  if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > Number(file.totalParts || 0)) {
-    throw new Error("Upload part number is invalid.");
-  }
-  return partNumber;
-}
-
-function expectedUploadPartSize(file, partNumber) {
-  const start = (partNumber - 1) * Number(file.partSize);
-  return Math.min(Number(file.partSize), Number(file.size) - start);
-}
-
-function localUploadPartPath(session, file, partNumber) {
-  return path.join(uploadSessionsDir, `${session.id}-${file.id}-${partNumber}.upload-part`);
-}
-
-function localUploadDestination(file) {
-  return path.join(uploadDir, path.basename(file.objectKey));
-}
-
-async function writeLocalUploadPart(request, destination, expectedSize) {
-  const temporary = `${destination}.${crypto.randomUUID()}.tmp`;
-  const hash = crypto.createHash("sha256");
-  let received = 0;
-  const verifier = new Transform({
-    transform(chunk, _encoding, callback) {
-      received += chunk.length;
-      if (received > expectedSize) return callback(new Error("That upload part is larger than expected."));
-      hash.update(chunk);
-      callback(null, chunk);
-    },
-  });
-  try {
-    await pipeline(request, verifier, fs.createWriteStream(temporary, { flags: "wx" }));
-    if (received !== expectedSize) throw new Error("That upload part did not finish transferring. Retry it.");
-    fs.renameSync(temporary, destination);
-    return hash.digest("hex");
-  } catch (error) {
-    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
-    throw error;
-  }
-}
-
-async function assembleLocalUpload(session, file) {
-  const destination = localUploadDestination(file);
-  const temporary = `${destination}.${crypto.randomUUID()}.assembling`;
-  try {
-    for (let partNumber = 1; partNumber <= file.totalParts; partNumber += 1) {
-      const partPath = localUploadPartPath(session, file, partNumber);
-      if (!fs.existsSync(partPath) || fs.statSync(partPath).size !== expectedUploadPartSize(file, partNumber)) {
-        throw new Error(`Upload part ${partNumber} is incomplete. Retry the upload.`);
-      }
-      await pipeline(
-        fs.createReadStream(partPath),
-        fs.createWriteStream(temporary, { flags: partNumber === 1 ? "w" : "a" }),
-      );
-    }
-    const size = fs.statSync(temporary).size;
-    if (size !== Number(file.size)) throw new Error("The uploaded source size did not match the selected file.");
-    fs.renameSync(temporary, destination);
-    for (let partNumber = 1; partNumber <= file.totalParts; partNumber += 1) {
-      const partPath = localUploadPartPath(session, file, partNumber);
-      if (fs.existsSync(partPath)) fs.unlinkSync(partPath);
-    }
-    return { size, type: file.type || "application/octet-stream" };
-  } catch (error) {
-    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
-    throw error;
-  }
-}
-
-function removeLocalUploadArtifacts(session, file) {
-  for (let partNumber = 1; partNumber <= Number(file.totalParts || 0); partNumber += 1) {
-    const partPath = localUploadPartPath(session, file, partNumber);
-    if (fs.existsSync(partPath)) fs.unlinkSync(partPath);
-  }
-  const destination = file.objectKey ? localUploadDestination(file) : null;
-  if (destination && fs.existsSync(destination)) fs.unlinkSync(destination);
-}
-
 app.post("/api/uploads/sessions", async (req, res) => {
+  if (!objectStorageConfigured) return res.status(409).json({ error: "Resumable cloud uploads are not enabled on this installation." });
   try {
     await ensureProductionUploadPersistence();
     const session = createUploadSession({
@@ -1344,20 +1225,8 @@ app.post("/api/uploads/sessions", async (req, res) => {
       partSize: uploadLimits.partSize,
       limits: uploadLimits,
     });
-    if (objectStorageConfigured) {
-      try {
-        for (const file of session.files) {
-          attachMultipartUpload(file, await createMultipartUpload(req.user.id, file, { batchId: session.batchId, fileId: file.id }));
-        }
-        session.storageMode = "cloud";
-      } catch (error) {
-        if (!isObjectStorageAuthorizationError(error)) throw error;
-        console.error("Cloud upload authorization failed. Using chunked application storage until the R2 token is replaced.");
-        await abortPreparedCloudUploads(req.user.id, session);
-        prepareLocalUploadSession(req.user.id, session);
-      }
-    } else {
-      prepareLocalUploadSession(req.user.id, session);
+    for (const file of session.files) {
+      attachMultipartUpload(file, await createMultipartUpload(req.user.id, file, { batchId: session.batchId, fileId: file.id }));
     }
     refreshSessionStatus(session);
     uploadSessions.set(session.id, session);
@@ -1382,15 +1251,6 @@ app.post("/api/uploads/sessions/:sessionId/files/:fileId/parts/:partNumber", asy
     if (file.status === "cancelled") return res.status(409).json({ error: "This upload was cancelled." });
     if (file.status === "paused") return res.status(409).json({ error: "This upload is paused." });
     const partNumber = Number(req.params.partNumber);
-    if (isLocalUploadFile(session, file)) {
-      setUploadFileStatus(session, file.id, "uploading");
-      await persistUploadSession(session, { requireDatabase: true });
-      return res.json({
-        uploadUrl: `/api/uploads/sessions/${session.id}/files/${file.id}/local-parts/${partNumber}`,
-        expiresIn: 15 * 60,
-        partNumber,
-      });
-    }
     const upload = await createMultipartPartUpload(req.user.id, {
       objectKey: file.objectKey,
       uploadId: file.uploadId,
@@ -1404,37 +1264,10 @@ app.post("/api/uploads/sessions/:sessionId/files/:fileId/parts/:partNumber", asy
   }
 });
 
-app.put("/api/uploads/sessions/:sessionId/files/:fileId/local-parts/:partNumber", async (req, res) => {
-  const session = await ownedUploadSession(req, req.params.sessionId);
-  if (!session) return res.status(404).json({ error: "Upload session not found." });
-  try {
-    const file = findUploadFile(session, req.params.fileId);
-    if (!isLocalUploadFile(session, file)) return res.status(409).json({ error: "This upload is not using application storage." });
-    if (file.status === "cancelled") return res.status(409).json({ error: "This upload was cancelled." });
-    if (file.status === "paused") return res.status(409).json({ error: "This upload is paused." });
-    const partNumber = validatedUploadPartNumber(file, req.params.partNumber);
-    const expectedSize = expectedUploadPartSize(file, partNumber);
-    const etag = await writeLocalUploadPart(req, localUploadPartPath(session, file, partNumber), expectedSize);
-    res.setHeader("ETag", `\"${etag}\"`);
-    res.status(200).end();
-  } catch (error) {
-    res.status(400).json({ error: error.message || "Could not accept that upload part." });
-  }
-});
-
 app.patch("/api/uploads/sessions/:sessionId/files/:fileId/parts/:partNumber", async (req, res) => {
   const session = await ownedUploadSession(req, req.params.sessionId);
   if (!session) return res.status(404).json({ error: "Upload session not found." });
   try {
-    const currentFile = findUploadFile(session, req.params.fileId);
-    if (isLocalUploadFile(session, currentFile)) {
-      const partNumber = validatedUploadPartNumber(currentFile, req.params.partNumber);
-      const partPath = localUploadPartPath(session, currentFile, partNumber);
-      const storedSize = fs.existsSync(partPath) ? fs.statSync(partPath).size : 0;
-      if (storedSize !== expectedUploadPartSize(currentFile, partNumber) || storedSize !== Number(req.body.size)) {
-        return res.status(409).json({ error: "That upload part did not finish transferring. Retry it." });
-      }
-    }
     const file = recordUploadPart(session, req.params.fileId, {
       partNumber: req.params.partNumber,
       etag: req.body.etag,
@@ -1461,17 +1294,12 @@ app.post("/api/uploads/sessions/:sessionId/files/:fileId/complete", async (req, 
     if (file.status === "finalizing") return res.status(409).json({ error: "This upload is already being finalized." });
     setUploadFileStatus(session, file.id, "finalizing", { error: null });
     await persistUploadSession(session, { requireDatabase: true });
-    let stored;
-    if (isLocalUploadFile(session, file)) {
-      stored = await assembleLocalUpload(session, file);
-    } else {
-      await completeMultipartUpload(req.user.id, {
-        objectKey: file.objectKey,
-        uploadId: file.uploadId,
-        parts: file.completedParts,
-      });
-      stored = await verifyObject(req.user.id, file.objectKey);
-    }
+    await completeMultipartUpload(req.user.id, {
+      objectKey: file.objectKey,
+      uploadId: file.uploadId,
+      parts: file.completedParts,
+    });
+    const stored = await verifyObject(req.user.id, file.objectKey);
     if (!stored.size || stored.size > uploadLimits.maxFileBytes) throw new Error("The uploaded source could not be verified.");
     if (!isSupportedStoredMedia(file, stored)) throw new Error("The uploaded source type is not supported.");
     const result = createProjectFromUploadSessionFile(req, session, file, stored);
@@ -1496,8 +1324,7 @@ app.post("/api/uploads/sessions/:sessionId/files/:fileId/:action", async (req, r
     if (action === "pause") setUploadFileStatus(session, file.id, "paused");
     else if (action === "resume" || action === "retry") setUploadFileStatus(session, file.id, file.uploadedBytes ? "uploading" : "ready_to_upload", { error: null });
     else if (action === "cancel") {
-      if (isLocalUploadFile(session, file)) removeLocalUploadArtifacts(session, file);
-      else await abortMultipartUpload(req.user.id, { objectKey: file.objectKey, uploadId: file.uploadId });
+      await abortMultipartUpload(req.user.id, { objectKey: file.objectKey, uploadId: file.uploadId });
       setUploadFileStatus(session, file.id, "cancelled");
     } else {
       return res.status(404).json({ error: "Upload action not found." });
@@ -1683,7 +1510,7 @@ function createProjectFromUploadSessionFile(req, session, file, stored) {
     stage: "Queued for processing — safe to leave",
     originalName: file.name,
     filePath: path.join(uploadDir, path.basename(file.objectKey)),
-    objectKey: isLocalUploadFile(session, file) ? null : file.objectKey,
+    objectKey: file.objectKey,
     mimeType: stored.type || file.type,
     processingMode: file.transcribe === false ? "manual" : "ai",
     sourceLanguage: normalizeSourceLanguage(body.sourceLanguage),
@@ -1812,22 +1639,8 @@ function createProjectBatch(req, files, fileOptions = []) {
 }
 
 function enqueueProject(job) {
-  if (!job || job.status !== "queued") return;
-  if (processingQueue.some((item) => item.id === job.id)) return;
   processingQueue.push(job);
   runNextProjects();
-}
-
-function scheduleProcessingLeaseRetry(job, delayMs = 30_000) {
-  if (!job?.id || processingLeaseRetryTimers.has(job.id)) return;
-  job.stage = "Waiting for the previous processor lease to clear";
-  persistJob(job);
-  const timer = setTimeout(() => {
-    processingLeaseRetryTimers.delete(job.id);
-    if (job.status === "queued") enqueueProject(job);
-  }, delayMs);
-  timer.unref?.();
-  processingLeaseRetryTimers.set(job.id, timer);
 }
 
 function runNextProjects() {
@@ -1836,7 +1649,7 @@ function runNextProjects() {
     activeProjects += 1;
     processClaimedProject(job)
       .catch((error) => {
-        console.error(safeErrorForLog(error));
+        console.error(error);
         Object.assign(job, {
           status: "failed",
           progress: Math.min(95, Math.max(2, Number(job.progress || 2))),
@@ -1863,7 +1676,7 @@ function runNextProjects() {
 async function processClaimedProject(job) {
   const claimed = await claimDatabaseProjectProcessingLease(job.id, job.userId, processingLeaseOwner);
   if (!claimed) {
-    scheduleProcessingLeaseRetry(job);
+    job.stage = "Processing claimed by another worker";
     return;
   }
   try {
@@ -2219,7 +2032,7 @@ app.post("/api/projects/:id/clips/:clipId/render", async (req, res) => {
   persistJob(job);
   res.status(202).json({ status: "rendering" });
   renderClip(job, clip, req.user.planTier).catch((error) => {
-    console.error(safeErrorForLog(error));
+    console.error(error);
     clip.renderStatus = "failed";
     clip.renderError = friendlyError(error);
     persistJob(job);
@@ -2805,22 +2618,22 @@ async function processProject(job) {
   persistJob(job);
   const audioPath = path.join(uploadDir, `${job.id}-audio.mp3`);
   const audioOnly = isAudioOnly(job.filePath);
-  if (!manualMode) {
-    await run(command, [
+  const previewTask = audioOnly ? Promise.resolve(false) : generatePreview(job);
+  const durationTask = probeDuration(command, job.filePath).catch(() => 0);
+  const audioTask = manualMode
+    ? Promise.resolve()
+    : run(command, [
       "-y", "-i", job.filePath, "-vn", "-ac", "1", "-ar", "16000",
       "-b:a", "48k", audioPath,
     ]);
-  }
-  const mediaDuration = await probeDuration(command, job.filePath).catch(() => 0);
-  const previewTask = audioOnly ? Promise.resolve(false) : generatePreview(job);
+  const [, , mediaDuration] = await Promise.all([audioTask, previewTask, durationTask]);
   job.duration = Math.max(1, Number(mediaDuration) || 1);
   job.progress = 24;
   job.phase = "prepare";
-  job.stage = job.silentSource ? "Preparing the silent source preview" : manualMode ? "Preparing the source preview" : "Audio prepared · building the source preview";
+  job.stage = job.silentSource ? "Silent source preview ready" : manualMode ? "Source preview ready" : "Audio and preview prepared";
   persistJob(job);
 
   if (manualMode) {
-    await previewTask;
     job.transcript = "";
     job.segments = [];
     job.clips = [{
@@ -2897,7 +2710,6 @@ async function processProject(job) {
   persistJob(job);
   job.duration = Math.max(job.duration, Math.ceil(job.segments.at(-1)?.end || 0));
   const clips = await chooseClips(job);
-  await previewTask;
   job.clips = clips.map((clip, index) => ({
     ...clip,
     id: `clip-${index + 1}`,
@@ -3458,7 +3270,6 @@ async function buildPreview(job) {
     "-level:v", "4.0",
     "-tag:v", "avc1",
     "-preset", "veryfast",
-    "-threads", String(ffmpegThreadLimit),
     "-crf", "27",
     "-fps_mode", "cfr",
     "-video_track_timescale", "30000",
@@ -3799,7 +3610,6 @@ function quickTimeVideoArgs(crf = "23") {
     "-level:v", "4.1",
     "-tag:v", "avc1",
     "-preset", "veryfast",
-    "-threads", String(ffmpegThreadLimit),
     "-crf", String(crf),
     "-fps_mode", "cfr",
     "-video_track_timescale", "30000",
@@ -4289,8 +4099,7 @@ async function cleanupAbandonedUploadSessions() {
     for (const file of session.files || []) {
       if (file.projectId || !file.objectKey || !file.uploadId || file.status === "queued_for_processing") continue;
       try {
-        if (isLocalUploadFile(session, file)) removeLocalUploadArtifacts(session, file);
-        else await abortMultipartUpload(session.userId, { objectKey: file.objectKey, uploadId: file.uploadId });
+        await abortMultipartUpload(session.userId, { objectKey: file.objectKey, uploadId: file.uploadId });
       } catch (error) {
         console.error(`Could not abort abandoned upload ${session.id}/${file.id}:`, error.message);
       }
@@ -4365,27 +4174,17 @@ async function loadPostgresJobs() {
 }
 
 function restoreInterruptedProject(job) {
-  const sourceCanRecover = Boolean(job.objectKey || (job.filePath && fs.existsSync(job.filePath)));
-  const recoverApiAuthenticationFailure = job.status === "failed"
-    && /API key could not be authenticated/i.test(String(job.error || ""))
-    && Number(job.apiAuthenticationRetryCount || 0) < 1
-    && sourceCanRecover;
-  if (job.status === "queued" || job.status === "processing" || recoverApiAuthenticationFailure) {
+  if (job.status === "queued" || job.status === "processing") {
+    const sourceCanRecover = Boolean(job.objectKey || (job.filePath && fs.existsSync(job.filePath)));
     if (sourceCanRecover) {
       Object.assign(job, {
         status: "queued",
         progress: 2,
         phase: "queued",
-        stage: recoverApiAuthenticationFailure
-          ? "AI credentials updated · retrying without another upload"
-          : "Recovered after restart · waiting for the processor",
+        stage: "Recovered after restart · waiting for the processor",
         resumeAfterRestart: true,
-        apiAuthenticationRetryCount: recoverApiAuthenticationFailure
-          ? Number(job.apiAuthenticationRetryCount || 0) + 1
-          : Number(job.apiAuthenticationRetryCount || 0),
       });
       delete job.error;
-      delete job.failedAt;
     } else {
       Object.assign(job, {
         status: "failed",
@@ -4567,21 +4366,7 @@ function authFailure(res, error) {
 
 function run(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: ["ignore", "ignore", "pipe"],
-      env: {
-        ...process.env,
-        OMP_NUM_THREADS: String(ffmpegThreadLimit),
-        OPENBLAS_NUM_THREADS: String(ffmpegThreadLimit),
-      },
-    });
-    try {
-      // Video work is background work. Keep the web server responsive even
-      // while Railway's small production CPU is fully occupied by FFmpeg.
-      if (child.pid) os.setPriority(child.pid, 10);
-    } catch {
-      // Priority adjustment is an optimization and may be unavailable locally.
-    }
+    const child = spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-5000); });
     child.on("error", reject);
@@ -4625,36 +4410,12 @@ function probeHasVideo(command, inputPath) {
 }
 
 function friendlyError(error) {
-  if (isApiAuthenticationError(error)) return "AI processing credentials could not be authenticated. Update OPENAI_API_KEY in Railway.";
   if (error?.status === 429) return "The API account needs billing or has reached its usage limit.";
+  if (error?.status === 401) return "The API key could not be authenticated.";
   if (error?.code === "ENOENT" && String(error?.message).includes("ffmpeg")) return "FFmpeg is required to process video files. Install it with: brew install ffmpeg";
   if (String(error?.message).toLowerCase().includes("invalid file format")) return "This video container could not be converted. Try MP4, MOV, WebM, or M4V.";
   if (String(error?.message).includes("Maximum content size")) return "The extracted audio section is too large to transcribe.";
-  return redactSecrets(error?.message || "Something went wrong while processing the video.");
-}
-
-function isApiAuthenticationError(error) {
-  const status = Number(error?.status || error?.statusCode || error?.response?.status || 0);
-  const code = String(error?.code || error?.error?.code || "");
-  const message = String(error?.message || error?.error?.message || "");
-  return status === 401 || /invalid_api_key|incorrect api key|api key.*auth|authentication.*key/i.test(`${code} ${message}`);
-}
-
-function redactSecrets(value) {
-  return String(value || "")
-    .replace(/\b(?:sk|rk)-(?:proj-|svcacct-)?[A-Za-z0-9_-]{6,}/g, "[REDACTED API KEY]")
-    .replace(/OPENAI_API_KEY\s*=\s*[^\s,;]+/gi, "OPENAI_API_KEY=[REDACTED]")
-    .replace(/(Authorization\s*:\s*Bearer)\s+[^\s,;]+/gi, "$1 [REDACTED]");
-}
-
-function safeErrorForLog(error) {
-  return {
-    name: String(error?.name || "Error"),
-    status: Number(error?.status || error?.statusCode || error?.response?.status || 0) || undefined,
-    code: String(error?.code || error?.error?.code || "") || undefined,
-    message: redactSecrets(error?.message || error?.error?.message || "Unexpected error"),
-    requestId: String(error?.request_id || error?.requestId || "") || undefined,
-  };
+  return error?.message || "Something went wrong while processing the video.";
 }
 
 function formatTime(seconds) {
@@ -5378,7 +5139,7 @@ app.use((error, _req, res, next) => {
 });
 
 app.use((error, _req, res, _next) => {
-  console.error(safeErrorForLog(error));
+  console.error(error);
   if (error?.type === "entity.parse.failed") return res.status(400).json({ error: "The request contained invalid JSON." });
   res.status(500).json({ error: "KlipPharma hit an unexpected server error." });
 });

@@ -1,44 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
-const ASSET_VERSION = "0.29.12";
+const ASSET_VERSION = "0.29.4";
 window.__KLIPPHARMA_ASSET_VERSION__ = ASSET_VERSION;
 console.info("[KlipPharma dashboard] asset loaded", { version: ASSET_VERSION, path: window.location.pathname });
-
-const nativeFetch = window.fetch.bind(window);
-let recoveringExpiredSession = false;
-
-function isProtectedApiRequest(input) {
-  try {
-    const rawUrl = typeof input === "string" ? input : input?.url;
-    const url = new URL(rawUrl, window.location.href);
-    return url.origin === window.location.origin
-      && url.pathname.startsWith("/api/")
-      && !url.pathname.startsWith("/api/auth/")
-      && url.pathname !== "/api/health";
-  } catch {
-    return false;
-  }
-}
-
-function recoverExpiredSession() {
-  if (recoveringExpiredSession || !currentUser) return;
-  recoveringExpiredSession = true;
-  clearTimeout(pollTimer);
-  clearTimeout(dashboardRefreshTimer);
-  clearTimeout(incomingRefreshTimer);
-  currentProjects = [];
-  billingState = null;
-  showAuthentication();
-  authError.textContent = "Your session expired. Sign in again to continue.";
-  authError.classList.remove("hidden");
-  window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-  window.setTimeout(() => { recoveringExpiredSession = false; }, 500);
-}
-
-window.fetch = async (...args) => {
-  const response = await nativeFetch(...args);
-  if (response.status === 401 && isProtectedApiRequest(args[0])) recoverExpiredSession();
-  return response;
-};
 
 function logIncomingDashboardFetch(details) {
   console.info("[KlipPharma Incoming Projects]", details);
@@ -108,7 +71,6 @@ let incomingState = { projects: [], stats: {}, connection: {} };
 const uploadManager = {
   sessions: new Map(),
   fileHandles: new Map(),
-  runningSessionIds: new Set(),
   activeSessionId: null,
   paused: false,
   cancelled: false,
@@ -358,14 +320,7 @@ async function startManagedUploadBatch(formData, fileOptions) {
     }),
   });
   const data = await response.json();
-  if (!response.ok) {
-    if (data.code === "CLOUD_UPLOAD_UNAVAILABLE") {
-      uploadMode = "local";
-      toast("Cloud storage is reconnecting. Using the standard secure upload instead.");
-      return uploadBatchLocally(formData);
-    }
-    throw new Error(data.error || "Could not prepare resumable uploads.");
-  }
+  if (!response.ok) throw new Error(data.error || "Could not prepare resumable uploads.");
   const session = data.session;
   uploadManager.sessions.set(session.id, session);
   uploadManager.activeSessionId = session.id;
@@ -405,42 +360,28 @@ function uploadSettingsFromForm(formData) {
 }
 
 async function runManagedUploadSession(sessionId) {
-  if (uploadManager.runningSessionIds.has(sessionId)) return;
   const session = uploadManager.sessions.get(sessionId);
   if (!session) return;
-  uploadManager.runningSessionIds.add(sessionId);
   const results = [];
-  try {
-    let nextIndex = 0;
-    let firstError = null;
-    const mobileTransfer = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
-      || window.matchMedia?.("(max-width: 760px)")?.matches;
-    const workerCount = mobileTransfer ? 1 : Math.min(2, session.files.length);
-    await Promise.all(Array.from({ length: workerCount }, async () => {
-      while (nextIndex < session.files.length && !uploadManager.cancelled) {
-        const index = nextIndex;
-        nextIndex += 1;
-        const fileState = session.files[index];
-        if (fileState.projectId || fileState.status === "cancelled") continue;
-        try {
-          const result = await uploadManagedFile(session, fileState);
-          if (result?.id) {
-            results.push(result.id);
-            currentProjects = [...new Set([...currentProjects, result.id])];
-            pollProjects();
-          }
-        } catch (error) {
-          firstError ||= error;
-        }
+  let nextIndex = 0;
+  const workerCount = Math.min(2, session.files.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < session.files.length && !uploadManager.cancelled) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const fileState = session.files[index];
+      if (fileState.projectId || fileState.status === "cancelled") continue;
+      const result = await uploadManagedFile(session, fileState);
+      if (result?.id) {
+        results.push(result.id);
+        currentProjects = [...new Set([...currentProjects, result.id])];
+        pollProjects();
       }
-    }));
-    if (results.length) {
-      $("#processingSummary").textContent = "Upload complete. KlipPharma will keep processing—even if you close this page.";
-      renderGlobalUploadManager();
     }
-    if (!results.length && firstError) throw firstError;
-  } finally {
-    uploadManager.runningSessionIds.delete(sessionId);
+  }));
+  if (results.length) {
+    $("#processingSummary").textContent = "Upload complete. KlipPharma will keep processing—even if you close this page.";
+    renderGlobalUploadManager();
   }
 }
 
@@ -517,40 +458,21 @@ async function uploadManagedPartWithRetry(session, fileState, file, partNumber) 
 function uploadPartDirectly(url, blob, type, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    let settled = false;
-    let stalled = false;
-    let lastProgressAt = Date.now();
-    const finish = (callback, value) => {
-      if (settled) return;
-      settled = true;
-      clearInterval(stallTimer);
-      callback(value);
-    };
     xhr.open("PUT", url);
-    xhr.timeout = 120_000;
     xhr.setRequestHeader("Content-Type", type || "application/octet-stream");
     xhr.upload.addEventListener("progress", (event) => {
-      lastProgressAt = Date.now();
       if (event.lengthComputable) onProgress(event.loaded);
     });
     xhr.addEventListener("load", () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         onProgress(blob.size);
-        finish(resolve, (xhr.getResponseHeader("ETag") || "").replace(/^"+|"+$/g, ""));
+        resolve((xhr.getResponseHeader("ETag") || "").replace(/^"+|"+$/g, ""));
       } else {
-        finish(reject, new Error(`Upload part failed with HTTP ${xhr.status || "unknown"}.`));
+        reject(new Error(`Cloud upload part failed with HTTP ${xhr.status || "unknown"}.`));
       }
     });
-    xhr.addEventListener("error", () => finish(reject, new Error("Upload interrupted — reconnecting and retrying.")));
-    xhr.addEventListener("timeout", () => finish(reject, new Error("Upload part timed out — retrying automatically.")));
-    xhr.addEventListener("abort", () => finish(reject, new Error(stalled
-      ? "Upload stopped making progress — retrying automatically."
-      : "The upload was canceled.")));
-    const stallTimer = setInterval(() => {
-      if (settled || Date.now() - lastProgressAt < 45_000) return;
-      stalled = true;
-      xhr.abort();
-    }, 5_000);
+    xhr.addEventListener("error", () => reject(new Error("Upload interrupted — reconnect to resume.")));
+    xhr.addEventListener("abort", () => reject(new Error("The upload was canceled.")));
     xhr.send(blob);
   });
 }
@@ -682,10 +604,7 @@ async function loadActiveUploadSessions() {
 function bindSelectedFilesToInterruptedUploads(files) {
   if (!files?.length) return;
   let resumedSessionId = null;
-  const sessions = [...uploadManager.sessions.values()]
-    .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")));
-  for (const session of sessions) {
-    let matchedFiles = 0;
+  for (const session of uploadManager.sessions.values()) {
     for (const fileState of session.files || []) {
       if (fileState.projectId || uploadManager.fileHandles.has(fileState.id)) continue;
       const match = files.find((file) => (
@@ -699,9 +618,7 @@ function bindSelectedFilesToInterruptedUploads(files) {
       if (fileState.status === "interrupted") fileState.status = fileState.uploadedBytes ? "uploading" : "ready_to_upload";
       fileState.error = null;
       resumedSessionId = session.id;
-      matchedFiles += 1;
     }
-    if (matchedFiles) break;
   }
   if (!resumedSessionId) return;
   uploadManager.activeSessionId = resumedSessionId;
@@ -2515,10 +2432,7 @@ function normalizeClientColor(value) {
   const color = legacy[String(value || "").toLowerCase()] || String(value || "").trim();
   return /^#[0-9a-f]{6}$/i.test(color) ? color.toLowerCase() : "#ffffff";
 }
-function toast(message) {
-  if (recoveringExpiredSession || /^(unauthorized|sign in to continue)\.?$/i.test(String(message || "").trim())) return;
-  const el=$("#toast"); el.textContent=message; el.classList.remove("hidden"); setTimeout(()=>el.classList.add("hidden"),4000);
-}
+function toast(message) { const el=$("#toast"); el.textContent=message; el.classList.remove("hidden"); setTimeout(()=>el.classList.add("hidden"),4000); }
 
 authSwitch.addEventListener("click", () => {
   creatingAccount = !creatingAccount;
@@ -4335,7 +4249,6 @@ async function acceptPendingInvitation() {
 }
 
 function showApplication(user) {
-  recoveringExpiredSession = false;
   currentUser = user || null;
   authView.classList.add("hidden");
   appShell.classList.remove("hidden");

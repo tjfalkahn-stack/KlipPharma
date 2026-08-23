@@ -4,47 +4,6 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
-## Version 0.29.12 — Web-first CPU scheduling
-
-- Runs FFmpeg conversion workers at lower operating-system priority so page and API requests remain responsive.
-- Caps native media-library thread counts in addition to the encoder thread limit.
-
-## Version 0.29.11 — Production responsiveness
-
-- Processes one video at a time by default so conversion work cannot starve the mobile dashboard.
-- Limits FFmpeg encoding threads on small Railway instances.
-- Separates audio extraction from preview conversion and overlaps the preview only with network-bound AI work.
-
-## Version 0.29.10 — API credential redaction
-
-- OpenAI authentication failures now show a generic corrective message and never echo a supplied key.
-- API keys, bearer tokens, and `OPENAI_API_KEY=` values are redacted from processing errors and server logs.
-
-## Version 0.29.9 — Mobile upload stall recovery
-
-- Detects a chunk with no progress for 45 seconds, aborts it, and retries automatically.
-- Limits phone uploads to one active file at a time to reduce iOS connection stalls.
-- Prevents duplicate upload runners and resumes only the newest matching interrupted session.
-- A failed file no longer prevents the remaining batch files from attempting upload.
-
-## Version 0.29.8 — Processing recovery after credential updates
-
-- AI-authentication failures retry once after a deployment without requiring another upload.
-- Jobs blocked by a stale processing lease now wait and retry instead of remaining permanently queued.
-
-## Version 0.29.7 — Reliable mobile fallback uploads
-
-- Replaced the single-request Railway fallback with retryable 8 MB same-origin chunks.
-- Uploads now stay resumable when the configured Cloudflare R2 token is rejected.
-- Local fallback parts are size-verified, assembled atomically, and cleaned up on cancellation or expiry.
-
-## Version 0.29.6 — Upload recovery and mobile session repair
-
-- Expired mobile sessions return to the sign-in screen instead of leaving the editor open behind an `Unauthorized` toast.
-- Protected API requests consistently show a clear sign-in-again message when the session has ended.
-- Mobile pages are pinned to the viewport width so the headline and creator workflow cannot remain horizontally shifted or clipped.
-- Invalid or expired R2 credentials no longer strand a creator after file selection; KlipPharma automatically falls back to its standard authenticated upload route.
-
 ## Version 0.29.2 — Silent camera-roll video handling
 
 - Video-only MP4/MOV files no longer fail during audio extraction.

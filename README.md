@@ -4,6 +4,11 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
+## Version 0.29.13 — Credential input hardening
+
+- Normalizes accidental spaces, line breaks, quotes, and variable-name prefixes before OpenAI authentication.
+- Redacts API credentials from processing errors and server logs.
+
 ## Version 0.29.9 — Mobile upload stall recovery
 
 - Detects a chunk with no progress for 45 seconds, aborts it, and retries automatically.

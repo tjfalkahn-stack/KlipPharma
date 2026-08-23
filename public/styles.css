@@ -1,6 +1,7 @@
 :root { --ink:#090d0a; --cream:#070a08; --paper:#101510; --green:#b8ef3c; --muted:#98a095; --line:#2b3329; --text:#edf2e9; --surface:#171d16; --soft:#20271f; }
+html { width:100%; max-width:100%; overflow-x:clip; }
 * { box-sizing:border-box; }
-body { margin:0; color:var(--text); background:radial-gradient(circle at 78% -10%,#1b2617 0,transparent 34%),var(--cream); font-family:"DM Sans",sans-serif; }
+body { width:100%; max-width:100%; margin:0; overflow-x:clip; color:var(--text); background:radial-gradient(circle at 78% -10%,#1b2617 0,transparent 34%),var(--cream); font-family:"DM Sans",sans-serif; }
 .topbar { height:76px; padding:0 max(28px,5vw); display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--line); background:rgba(7,10,8,.9); }
 .brand { color:inherit; text-decoration:none; display:flex; align-items:center; gap:12px; font:800 20px Manrope,sans-serif; }
 .brand-mark { width:40px; height:40px; display:grid; place-items:center; color:#10150e; background:var(--green); border-radius:9px 9px 18px 9px; font-size:13px; letter-spacing:-1px; }
@@ -665,6 +666,20 @@ blockquote { margin:0 0 9px; font-size:15px; color:#c1c9be; border-left:3px soli
 @media (max-width:520px) { .creator-grid{grid-template-columns:1fr}.length-grid,.automix-length-grid{grid-template-columns:1fr 1fr}.automix-toggle{grid-template-columns:auto minmax(0,1fr)}.automix-toggle>.toggle-track{grid-row:1/3}.automix-badge{display:none}.watermark-grid,.meme-select-grid,.meme-timing-grid,.tiktok-switches{grid-template-columns:1fr}.tiktok-stats-row{grid-template-columns:1fr 1fr}.tiktok-video-card{grid-template-columns:58px minmax(0,1fr)}.tiktok-video-cover{width:58px;height:78px}.dashboard-destination-account{grid-template-columns:1fr}.dashboard-destination-avatar{width:44px;height:44px}.dashboard-destination-actions{display:grid;grid-template-columns:1fr}.meme-studio-head{grid-template-columns:1fr auto}.meme-studio-head .pro-badge{grid-column:2;grid-row:1}.meme-upload-row{grid-template-columns:1fr}.brand-policy{grid-template-columns:auto 1fr}.brand-policy-badge{grid-column:2}.creator-card{min-height:132px}.workspace{padding:16px}.batch-recipe{padding:14px} }
 
 @media (max-width:760px) {
+  main,
+  .auth-view {
+    width:100%;
+    padding-left:16px;
+    padding-right:16px;
+  }
+  .hero {
+    max-width:100%;
+  }
+  .hero h1 {
+    max-width:100%;
+    overflow-wrap:anywhere;
+    font-size:clamp(42px,12.5vw,62px);
+  }
   .global-upload-manager {
     top:66px;
     width:calc(100% - 20px);

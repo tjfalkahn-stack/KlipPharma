@@ -4,6 +4,12 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
+## Version 0.29.11 — Production responsiveness
+
+- Processes one video at a time by default so conversion work cannot starve the mobile dashboard.
+- Limits FFmpeg encoding threads on small Railway instances.
+- Separates audio extraction from preview conversion and overlaps the preview only with network-bound AI work.
+
 ## Version 0.29.10 — API credential redaction
 
 - OpenAI authentication failures now show a generic corrective message and never echo a supplied key.

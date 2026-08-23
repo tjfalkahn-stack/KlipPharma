@@ -115,7 +115,8 @@ fs.mkdirSync(projectsDir, { recursive: true });
 fs.mkdirSync(uploadSessionsDir, { recursive: true });
 
 const app = express();
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openaiApiKey = normalizeOpenAiApiKey(process.env.OPENAI_API_KEY);
+const openai = new OpenAI({ apiKey: openaiApiKey });
 const stripeSecretKey = String(process.env.STRIPE_SECRET_KEY || "").trim();
 const stripeWebhookSecret = String(process.env.STRIPE_WEBHOOK_SECRET || "").trim();
 const stripeCreatorMonthlyPriceId = String(
@@ -416,7 +417,7 @@ app.use(attachUser);
 app.use("/exports", requireUser, authorizeExport, express.static(exportDir));
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, name: "KlipPharma", aiConfigured: Boolean(process.env.OPENAI_API_KEY), ffmpeg: true, authMode, uploadMode: objectStorageConfigured ? "direct" : "local", proFeaturesOpen, billingConfigured });
+  res.json({ ok: true, name: "KlipPharma", aiConfigured: Boolean(openaiApiKey), ffmpeg: true, authMode, uploadMode: objectStorageConfigured ? "direct" : "local", proFeaturesOpen, billingConfigured });
 });
 
 app.get("/api/auth/session", (req, res) => {
@@ -1831,7 +1832,7 @@ function runNextProjects() {
     activeProjects += 1;
     processClaimedProject(job)
       .catch((error) => {
-        console.error(error);
+        console.error(safeErrorForLog(error));
         Object.assign(job, {
           status: "failed",
           progress: Math.min(95, Math.max(2, Number(job.progress || 2))),
@@ -4603,12 +4604,44 @@ function probeHasVideo(command, inputPath) {
 }
 
 function friendlyError(error) {
+  if (isApiAuthenticationError(error)) return "AI processing credentials could not be authenticated.";
   if (error?.status === 429) return "The API account needs billing or has reached its usage limit.";
-  if (error?.status === 401) return "The API key could not be authenticated.";
   if (error?.code === "ENOENT" && String(error?.message).includes("ffmpeg")) return "FFmpeg is required to process video files. Install it with: brew install ffmpeg";
   if (String(error?.message).toLowerCase().includes("invalid file format")) return "This video container could not be converted. Try MP4, MOV, WebM, or M4V.";
   if (String(error?.message).includes("Maximum content size")) return "The extracted audio section is too large to transcribe.";
-  return error?.message || "Something went wrong while processing the video.";
+  return redactSecrets(error?.message || "Something went wrong while processing the video.");
+}
+
+function normalizeOpenAiApiKey(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^OPENAI_API_KEY\s*=\s*/i, "")
+    .replace(/^['"]|['"]$/g, "")
+    .replace(/\s+/g, "");
+}
+
+function isApiAuthenticationError(error) {
+  const status = Number(error?.status || error?.statusCode || error?.response?.status || 0);
+  const code = String(error?.code || error?.error?.code || "");
+  const message = String(error?.message || error?.error?.message || "");
+  return status === 401 || /invalid_api_key|incorrect api key|api key.*auth|authentication.*key|invalid header value|bearer[\s\S]*invalid/i.test(`${code} ${message}`);
+}
+
+function redactSecrets(value) {
+  return String(value || "")
+    .replace(/OPENAI_API_KEY\s*=\s*[^\s,;]+/gi, "OPENAI_API_KEY=[REDACTED]")
+    .replace(/\b(?:sk|rk)-(?:proj-|svcacct-)?[A-Za-z0-9_-]{6,}/g, "[REDACTED API KEY]")
+    .replace(/(Authorization\s*:\s*Bearer)\s+[^\s,;]+/gi, "$1 [REDACTED]");
+}
+
+function safeErrorForLog(error) {
+  return {
+    name: String(error?.name || "Error"),
+    status: Number(error?.status || error?.statusCode || error?.response?.status || 0) || undefined,
+    code: String(error?.code || error?.error?.code || "") || undefined,
+    message: redactSecrets(error?.message || error?.error?.message || "Unexpected error"),
+    requestId: String(error?.request_id || error?.requestId || "") || undefined,
+  };
 }
 
 function formatTime(seconds) {

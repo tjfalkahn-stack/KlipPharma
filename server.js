@@ -4567,7 +4567,21 @@ function authFailure(res, error) {
 
 function run(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn(command, args, {
+      stdio: ["ignore", "ignore", "pipe"],
+      env: {
+        ...process.env,
+        OMP_NUM_THREADS: String(ffmpegThreadLimit),
+        OPENBLAS_NUM_THREADS: String(ffmpegThreadLimit),
+      },
+    });
+    try {
+      // Video work is background work. Keep the web server responsive even
+      // while Railway's small production CPU is fully occupied by FFmpeg.
+      if (child.pid) os.setPriority(child.pid, 10);
+    } catch {
+      // Priority adjustment is an optimization and may be unavailable locally.
+    }
     let stderr = "";
     child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-5000); });
     child.on("error", reject);

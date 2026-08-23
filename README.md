@@ -4,6 +4,11 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
+## Version 0.29.12 — Web-first CPU scheduling
+
+- Runs FFmpeg conversion workers at lower operating-system priority so page and API requests remain responsive.
+- Caps native media-library thread counts in addition to the encoder thread limit.
+
 ## Version 0.29.11 — Production responsiveness
 
 - Processes one video at a time by default so conversion work cannot starve the mobile dashboard.

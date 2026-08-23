@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const ASSET_VERSION = "0.29.9";
+const ASSET_VERSION = "0.29.13";
 window.__KLIPPHARMA_ASSET_VERSION__ = ASSET_VERSION;
 console.info("[KlipPharma dashboard] asset loaded", { version: ASSET_VERSION, path: window.location.pathname });
 

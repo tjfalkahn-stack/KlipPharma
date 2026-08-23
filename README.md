@@ -4,6 +4,11 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
+## Version 0.29.8 — Processing recovery after credential updates
+
+- AI-authentication failures retry once after a deployment without requiring another upload.
+- Jobs blocked by a stale processing lease now wait and retry instead of remaining permanently queued.
+
 ## Version 0.29.7 — Reliable mobile fallback uploads
 
 - Replaced the single-request Railway fallback with retryable 8 MB same-origin chunks.

@@ -141,7 +141,12 @@ const authAttempts = new Map();
 const oauthStates = new Map();
 const localSocialConnections = new Map();
 const integrationAttempts = new Map();
-const maxConcurrentProjects = 2;
+// Railway production has a small shared CPU budget. Running two projects while
+// each project also creates preview/audio FFmpeg workers can starve Express and
+// make the dashboard appear offline on mobile. Keep one project active by
+// default; larger deployments can opt in to two with PROCESSING_CONCURRENCY.
+const maxConcurrentProjects = Math.max(1, Math.min(2, Number.parseInt(process.env.PROCESSING_CONCURRENCY || "1", 10) || 1));
+const ffmpegThreadLimit = Math.max(1, Math.min(2, Number.parseInt(process.env.FFMPEG_THREADS || "1", 10) || 1));
 const processingLeaseOwner = `${os.hostname()}-${process.pid}-${crypto.randomUUID()}`;
 const uploadLimits = {
   maxFiles: Number(process.env.UPLOAD_MAX_FILES || 10),
@@ -2800,22 +2805,22 @@ async function processProject(job) {
   persistJob(job);
   const audioPath = path.join(uploadDir, `${job.id}-audio.mp3`);
   const audioOnly = isAudioOnly(job.filePath);
-  const previewTask = audioOnly ? Promise.resolve(false) : generatePreview(job);
-  const durationTask = probeDuration(command, job.filePath).catch(() => 0);
-  const audioTask = manualMode
-    ? Promise.resolve()
-    : run(command, [
+  if (!manualMode) {
+    await run(command, [
       "-y", "-i", job.filePath, "-vn", "-ac", "1", "-ar", "16000",
       "-b:a", "48k", audioPath,
     ]);
-  const [, , mediaDuration] = await Promise.all([audioTask, previewTask, durationTask]);
+  }
+  const mediaDuration = await probeDuration(command, job.filePath).catch(() => 0);
+  const previewTask = audioOnly ? Promise.resolve(false) : generatePreview(job);
   job.duration = Math.max(1, Number(mediaDuration) || 1);
   job.progress = 24;
   job.phase = "prepare";
-  job.stage = job.silentSource ? "Silent source preview ready" : manualMode ? "Source preview ready" : "Audio and preview prepared";
+  job.stage = job.silentSource ? "Preparing the silent source preview" : manualMode ? "Preparing the source preview" : "Audio prepared · building the source preview";
   persistJob(job);
 
   if (manualMode) {
+    await previewTask;
     job.transcript = "";
     job.segments = [];
     job.clips = [{
@@ -2892,6 +2897,7 @@ async function processProject(job) {
   persistJob(job);
   job.duration = Math.max(job.duration, Math.ceil(job.segments.at(-1)?.end || 0));
   const clips = await chooseClips(job);
+  await previewTask;
   job.clips = clips.map((clip, index) => ({
     ...clip,
     id: `clip-${index + 1}`,
@@ -3452,6 +3458,7 @@ async function buildPreview(job) {
     "-level:v", "4.0",
     "-tag:v", "avc1",
     "-preset", "veryfast",
+    "-threads", String(ffmpegThreadLimit),
     "-crf", "27",
     "-fps_mode", "cfr",
     "-video_track_timescale", "30000",
@@ -3792,6 +3799,7 @@ function quickTimeVideoArgs(crf = "23") {
     "-level:v", "4.1",
     "-tag:v", "avc1",
     "-preset", "veryfast",
+    "-threads", String(ffmpegThreadLimit),
     "-crf", String(crf),
     "-fps_mode", "cfr",
     "-video_track_timescale", "30000",

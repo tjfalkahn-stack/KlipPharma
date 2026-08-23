@@ -76,6 +76,7 @@ import {
   uploadSessionForClient,
   canAccessUploadSession as canAccessUploadSessionRecord,
 } from "./lib/upload-sessions.js";
+import { batchSourcesSettled, fitClipToRequestedLength, takeMontageSegmentsRoundRobin } from "./lib/batch-readiness.js";
 import {
   applyKlipdoseHandoffState,
   klipdoseApiKeyFromEnv,
@@ -3047,8 +3048,13 @@ async function chooseClips(job) {
   const maxEnd = job.segments.at(-1)?.end || Infinity;
   return (parsed.clips || [])
     .map((clip) => {
-      const start = Math.max(0, Number(clip.start));
-      const end = Math.min(maxEnd, Number(clip.end), start + generationMaximum, start + 90);
+      const proposedStart = Math.max(0, Number(clip.start));
+      const proposedEnd = Math.min(maxEnd, Number(clip.end), proposedStart + generationMaximum, proposedStart + 90);
+      const fitted = Number.isFinite(proposedStart) && Number.isFinite(proposedEnd) && Number.isFinite(requestedLength)
+        ? fitClipToRequestedLength(proposedStart, proposedEnd, maxEnd, requestedLength)
+        : { start: proposedStart, end: proposedEnd };
+      const start = fitted.start;
+      const end = fitted.end;
       const values = Object.values(clip.scores || {}).map(Number).filter(Number.isFinite);
       const fallbackScore = values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : 0;
       const suppliedScore = Number(clip.overallScore);
@@ -3876,7 +3882,9 @@ function finalizeBatchOutputCount(batchId) {
   const group = [...jobs.values()]
     .filter((job) => job.batchId === batchId)
     .sort((a, b) => Number(a.batchPosition || 0) - Number(b.batchPosition || 0));
-  if (!group.length || group.some((job) => job.status === "queued" || job.status === "processing")) return;
+  const uploadSession = [...uploadSessions.values()].find((session) => session.batchId === batchId) || null;
+  if (!batchSourcesSettled(group, uploadSession)) return;
+  if (group.some((job) => job.status === "queued" || job.status === "processing")) return;
   if (group.every((job) => job.batchOutputFinalized)) return;
   const owner = group[0];
   if (!owner.customOutputCountEnabled) {
@@ -3918,6 +3926,8 @@ function maybeStartBatchMontage(batchId) {
     .sort((a, b) => Number(a.batchPosition || 0) - Number(b.batchPosition || 0));
   const owner = group.find((job) => job.montage);
   if (!owner || owner.montage.status !== "waiting") return;
+  const uploadSession = [...uploadSessions.values()].find((session) => session.batchId === batchId) || null;
+  if (!batchSourcesSettled(group, uploadSession)) return;
   if (group.some((job) => job.status === "queued" || job.status === "processing")) return;
 
   owner.montage.status = "rendering";
@@ -4196,23 +4206,7 @@ function selectMontageSegments(group, targetDuration, style) {
     })
     .filter((queue) => queue.length);
 
-  const selected = [];
-  let remaining = targetDuration;
-  while (remaining >= 0.75 && queues.some((queue) => queue.length)) {
-    let progressed = false;
-    for (const queue of queues) {
-      if (remaining < 0.75) break;
-      const candidate = queue.shift();
-      if (!candidate) continue;
-      const duration = Math.min(candidate.duration, remaining);
-      if (duration < 0.75) continue;
-      selected.push({ ...candidate, duration });
-      remaining -= duration;
-      progressed = true;
-    }
-    if (!progressed) break;
-  }
-  return selected;
+  return takeMontageSegmentsRoundRobin(queues, targetDuration);
 }
 
 function montageStyleLabel(style) {

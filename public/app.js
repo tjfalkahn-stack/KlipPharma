@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const ASSET_VERSION = "0.29.13";
+const ASSET_VERSION = "0.29.14";
 window.__KLIPPHARMA_ASSET_VERSION__ = ASSET_VERSION;
 console.info("[KlipPharma dashboard] asset loaded", { version: ASSET_VERSION, path: window.location.pathname });
 
@@ -156,7 +156,7 @@ function paintOutputCountPolicy() {
   proOutputCount.classList.toggle("locked", !enabled);
   outputCountBadge.textContent = enabled ? "PRO ACTIVE" : "PRO";
   outputCountHelp.textContent = enabled
-    ? "Choose exactly 1–10 top-ranked klips across the entire batch."
+    ? "This controls separate ranked klips, not source videos. Auto-Mix creates one combined video from the uploaded batch."
     : "Upgrade to Pro to choose 1–10 finished klips. Your current plan uses Smart selection.";
 }
 
@@ -787,7 +787,11 @@ async function pollProjects() {
     const sourcesFinished = projects.every((project) => project.status === "ready" || project.status === "failed" || project.status === "source_auth_required");
     const montage = projects.find((project) => project.montage)?.montage;
     const montageFinished = !montage || montage.status === "ready" || montage.status === "failed";
-    const finished = sourcesFinished && montageFinished;
+    const managedSession = managedSessionForProjects(projects);
+    const uploadFinished = !managedSession || managedSession.files.every((file) => (
+      file.projectId || file.status === "queued_for_processing" || file.status === "failed" || file.status === "cancelled"
+    ));
+    const finished = uploadFinished && sourcesFinished && montageFinished;
     if (finished) {
       const successful = projects.filter((project) => project.status === "ready");
       if (!successful.length) {
@@ -810,6 +814,15 @@ async function pollProjects() {
     toast(error.message || "Could not check the batch.");
     pollTimer = setTimeout(pollProjects, 2500);
   }
+}
+
+function managedSessionForProjects(projects) {
+  const batchIds = new Set((projects || []).map((project) => String(project?.batchId || "")).filter(Boolean));
+  const projectIds = new Set((projects || []).map((project) => String(project?.id || "")).filter(Boolean));
+  return [...uploadManager.sessions.values()].find((session) => (
+    batchIds.has(String(session?.batchId || ""))
+      || (session?.files || []).some((file) => file?.projectId && projectIds.has(String(file.projectId)))
+  )) || null;
 }
 
 function renderBatchStatus(projects) {

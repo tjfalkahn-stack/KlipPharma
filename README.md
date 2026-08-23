@@ -4,6 +4,13 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
+## Version 0.29.9 — Mobile upload stall recovery
+
+- Detects a chunk with no progress for 45 seconds, aborts it, and retries automatically.
+- Limits phone uploads to one active file at a time to reduce iOS connection stalls.
+- Prevents duplicate upload runners and resumes only the newest matching interrupted session.
+- A failed file no longer prevents the remaining batch files from attempting upload.
+
 ## Version 0.29.8 — Processing recovery after credential updates
 
 - AI-authentication failures retry once after a deployment without requiring another upload.

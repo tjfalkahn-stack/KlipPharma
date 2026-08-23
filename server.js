@@ -58,6 +58,7 @@ import {
   createMultipartUpload,
   deleteObject,
   downloadObject,
+  isObjectStorageAuthorizationError,
   objectStorageConfigured,
   verifyObject,
 } from "./lib/object-storage.js";
@@ -1233,6 +1234,13 @@ app.post("/api/uploads/sessions", async (req, res) => {
     await persistUploadSession(session, { requireDatabase: true });
     res.status(201).json({ session: uploadSessionForClient(session) });
   } catch (error) {
+    if (isObjectStorageAuthorizationError(error)) {
+      console.error("Cloud upload authorization failed. Replace the configured R2 access token.");
+      return res.status(503).json({
+        error: "Cloud uploads are temporarily unavailable.",
+        code: "CLOUD_UPLOAD_UNAVAILABLE",
+      });
+    }
     res.status(400).json({ error: error.message || "Could not create an upload session." });
   }
 });

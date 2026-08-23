@@ -1831,7 +1831,7 @@ function runNextProjects() {
     activeProjects += 1;
     processClaimedProject(job)
       .catch((error) => {
-        console.error(error);
+        console.error(safeErrorForLog(error));
         Object.assign(job, {
           status: "failed",
           progress: Math.min(95, Math.max(2, Number(job.progress || 2))),
@@ -2214,7 +2214,7 @@ app.post("/api/projects/:id/clips/:clipId/render", async (req, res) => {
   persistJob(job);
   res.status(202).json({ status: "rendering" });
   renderClip(job, clip, req.user.planTier).catch((error) => {
-    console.error(error);
+    console.error(safeErrorForLog(error));
     clip.renderStatus = "failed";
     clip.renderError = friendlyError(error);
     persistJob(job);
@@ -4603,12 +4603,36 @@ function probeHasVideo(command, inputPath) {
 }
 
 function friendlyError(error) {
+  if (isApiAuthenticationError(error)) return "AI processing credentials could not be authenticated. Update OPENAI_API_KEY in Railway.";
   if (error?.status === 429) return "The API account needs billing or has reached its usage limit.";
-  if (error?.status === 401) return "The API key could not be authenticated.";
   if (error?.code === "ENOENT" && String(error?.message).includes("ffmpeg")) return "FFmpeg is required to process video files. Install it with: brew install ffmpeg";
   if (String(error?.message).toLowerCase().includes("invalid file format")) return "This video container could not be converted. Try MP4, MOV, WebM, or M4V.";
   if (String(error?.message).includes("Maximum content size")) return "The extracted audio section is too large to transcribe.";
-  return error?.message || "Something went wrong while processing the video.";
+  return redactSecrets(error?.message || "Something went wrong while processing the video.");
+}
+
+function isApiAuthenticationError(error) {
+  const status = Number(error?.status || error?.statusCode || error?.response?.status || 0);
+  const code = String(error?.code || error?.error?.code || "");
+  const message = String(error?.message || error?.error?.message || "");
+  return status === 401 || /invalid_api_key|incorrect api key|api key.*auth|authentication.*key/i.test(`${code} ${message}`);
+}
+
+function redactSecrets(value) {
+  return String(value || "")
+    .replace(/\b(?:sk|rk)-(?:proj-|svcacct-)?[A-Za-z0-9_-]{6,}/g, "[REDACTED API KEY]")
+    .replace(/OPENAI_API_KEY\s*=\s*[^\s,;]+/gi, "OPENAI_API_KEY=[REDACTED]")
+    .replace(/(Authorization\s*:\s*Bearer)\s+[^\s,;]+/gi, "$1 [REDACTED]");
+}
+
+function safeErrorForLog(error) {
+  return {
+    name: String(error?.name || "Error"),
+    status: Number(error?.status || error?.statusCode || error?.response?.status || 0) || undefined,
+    code: String(error?.code || error?.error?.code || "") || undefined,
+    message: redactSecrets(error?.message || error?.error?.message || "Unexpected error"),
+    requestId: String(error?.request_id || error?.requestId || "") || undefined,
+  };
 }
 
 function formatTime(seconds) {
@@ -5332,7 +5356,7 @@ app.use((error, _req, res, next) => {
 });
 
 app.use((error, _req, res, _next) => {
-  console.error(error);
+  console.error(safeErrorForLog(error));
   if (error?.type === "entity.parse.failed") return res.status(400).json({ error: "The request contained invalid JSON." });
   res.status(500).json({ error: "KlipPharma hit an unexpected server error." });
 });

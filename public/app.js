@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const ASSET_VERSION = "0.29.8";
+const ASSET_VERSION = "0.29.9";
 window.__KLIPPHARMA_ASSET_VERSION__ = ASSET_VERSION;
 console.info("[KlipPharma dashboard] asset loaded", { version: ASSET_VERSION, path: window.location.pathname });
 
@@ -108,6 +108,7 @@ let incomingState = { projects: [], stats: {}, connection: {} };
 const uploadManager = {
   sessions: new Map(),
   fileHandles: new Map(),
+  runningSessionIds: new Set(),
   activeSessionId: null,
   paused: false,
   cancelled: false,
@@ -404,28 +405,42 @@ function uploadSettingsFromForm(formData) {
 }
 
 async function runManagedUploadSession(sessionId) {
+  if (uploadManager.runningSessionIds.has(sessionId)) return;
   const session = uploadManager.sessions.get(sessionId);
   if (!session) return;
+  uploadManager.runningSessionIds.add(sessionId);
   const results = [];
-  let nextIndex = 0;
-  const workerCount = Math.min(2, session.files.length);
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (nextIndex < session.files.length && !uploadManager.cancelled) {
-      const index = nextIndex;
-      nextIndex += 1;
-      const fileState = session.files[index];
-      if (fileState.projectId || fileState.status === "cancelled") continue;
-      const result = await uploadManagedFile(session, fileState);
-      if (result?.id) {
-        results.push(result.id);
-        currentProjects = [...new Set([...currentProjects, result.id])];
-        pollProjects();
+  try {
+    let nextIndex = 0;
+    let firstError = null;
+    const mobileTransfer = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
+      || window.matchMedia?.("(max-width: 760px)")?.matches;
+    const workerCount = mobileTransfer ? 1 : Math.min(2, session.files.length);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (nextIndex < session.files.length && !uploadManager.cancelled) {
+        const index = nextIndex;
+        nextIndex += 1;
+        const fileState = session.files[index];
+        if (fileState.projectId || fileState.status === "cancelled") continue;
+        try {
+          const result = await uploadManagedFile(session, fileState);
+          if (result?.id) {
+            results.push(result.id);
+            currentProjects = [...new Set([...currentProjects, result.id])];
+            pollProjects();
+          }
+        } catch (error) {
+          firstError ||= error;
+        }
       }
+    }));
+    if (results.length) {
+      $("#processingSummary").textContent = "Upload complete. KlipPharma will keep processing—even if you close this page.";
+      renderGlobalUploadManager();
     }
-  }));
-  if (results.length) {
-    $("#processingSummary").textContent = "Upload complete. KlipPharma will keep processing—even if you close this page.";
-    renderGlobalUploadManager();
+    if (!results.length && firstError) throw firstError;
+  } finally {
+    uploadManager.runningSessionIds.delete(sessionId);
   }
 }
 
@@ -502,21 +517,40 @@ async function uploadManagedPartWithRetry(session, fileState, file, partNumber) 
 function uploadPartDirectly(url, blob, type, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let settled = false;
+    let stalled = false;
+    let lastProgressAt = Date.now();
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(stallTimer);
+      callback(value);
+    };
     xhr.open("PUT", url);
+    xhr.timeout = 120_000;
     xhr.setRequestHeader("Content-Type", type || "application/octet-stream");
     xhr.upload.addEventListener("progress", (event) => {
+      lastProgressAt = Date.now();
       if (event.lengthComputable) onProgress(event.loaded);
     });
     xhr.addEventListener("load", () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         onProgress(blob.size);
-        resolve((xhr.getResponseHeader("ETag") || "").replace(/^"+|"+$/g, ""));
+        finish(resolve, (xhr.getResponseHeader("ETag") || "").replace(/^"+|"+$/g, ""));
       } else {
-        reject(new Error(`Cloud upload part failed with HTTP ${xhr.status || "unknown"}.`));
+        finish(reject, new Error(`Upload part failed with HTTP ${xhr.status || "unknown"}.`));
       }
     });
-    xhr.addEventListener("error", () => reject(new Error("Upload interrupted — reconnect to resume.")));
-    xhr.addEventListener("abort", () => reject(new Error("The upload was canceled.")));
+    xhr.addEventListener("error", () => finish(reject, new Error("Upload interrupted — reconnecting and retrying.")));
+    xhr.addEventListener("timeout", () => finish(reject, new Error("Upload part timed out — retrying automatically.")));
+    xhr.addEventListener("abort", () => finish(reject, new Error(stalled
+      ? "Upload stopped making progress — retrying automatically."
+      : "The upload was canceled.")));
+    const stallTimer = setInterval(() => {
+      if (settled || Date.now() - lastProgressAt < 45_000) return;
+      stalled = true;
+      xhr.abort();
+    }, 5_000);
     xhr.send(blob);
   });
 }
@@ -648,7 +682,10 @@ async function loadActiveUploadSessions() {
 function bindSelectedFilesToInterruptedUploads(files) {
   if (!files?.length) return;
   let resumedSessionId = null;
-  for (const session of uploadManager.sessions.values()) {
+  const sessions = [...uploadManager.sessions.values()]
+    .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")));
+  for (const session of sessions) {
+    let matchedFiles = 0;
     for (const fileState of session.files || []) {
       if (fileState.projectId || uploadManager.fileHandles.has(fileState.id)) continue;
       const match = files.find((file) => (
@@ -662,7 +699,9 @@ function bindSelectedFilesToInterruptedUploads(files) {
       if (fileState.status === "interrupted") fileState.status = fileState.uploadedBytes ? "uploading" : "ready_to_upload";
       fileState.error = null;
       resumedSessionId = session.id;
+      matchedFiles += 1;
     }
+    if (matchedFiles) break;
   }
   if (!resumedSessionId) return;
   uploadManager.activeSessionId = resumedSessionId;

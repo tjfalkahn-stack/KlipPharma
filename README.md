@@ -4,6 +4,14 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
+## Version 0.29.18 — Auth-scoped upload-state reconciliation
+
+- Clears legacy or cross-account browser upload snapshots instead of restoring them before authentication.
+- Treats the authenticated server response as authoritative and removes local sessions the server no longer returns.
+- Prevents historical server sessions from recreating a discarded legacy browser banner.
+- Persists only sessions that still require a device transfer and enables cancellation for interrupted uploads.
+- Busts the mobile dashboard module cache so the stale-card repair loads immediately.
+
 ## Version 0.29.17 — Completed-upload banner cleanup
 
 - Hides the global upload banner as soon as every source file is safely handed to server-side processing.

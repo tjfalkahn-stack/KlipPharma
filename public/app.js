@@ -1,7 +1,13 @@
-import { selectUploadSessionNeedingDevice, uploadFileNeedsDevice } from "./upload-manager-state.js?v=0.29.17";
+import {
+  pendingUploadSessions,
+  selectUploadSessionNeedingDevice,
+  serverSessionsConfirmedByBrowser,
+  uploadFileNeedsDevice,
+  uploadSnapshotBelongsToUser,
+} from "./upload-manager-state.js?v=0.29.18";
 
 const $ = (selector) => document.querySelector(selector);
-const ASSET_VERSION = "0.29.17";
+const ASSET_VERSION = "0.29.18";
 window.__KLIPPHARMA_ASSET_VERSION__ = ASSET_VERSION;
 console.info("[KlipPharma dashboard] asset loaded", { version: ASSET_VERSION, path: window.location.pathname });
 
@@ -132,7 +138,6 @@ processingBack.addEventListener("click", () => {
 globalUploadPause?.addEventListener("click", () => updateActiveUploadFiles("pause"));
 globalUploadResume?.addEventListener("click", () => updateActiveUploadFiles("resume"));
 globalUploadCancel?.addEventListener("click", () => updateActiveUploadFiles("cancel"));
-restoreUploadManagerSnapshot();
 const languageNames = {
   en: "English", es: "Spanish", fr: "French", pt: "Portuguese", de: "German", it: "Italian",
   ja: "Japanese", ko: "Korean", zh: "Chinese", ar: "Arabic", hi: "Hindi",
@@ -652,25 +657,52 @@ function renderGlobalUploadManager() {
   $("#globalUploadMeter").style.width = `${percent}%`;
   globalUploadPause.disabled = uploadManager.paused || !active;
   globalUploadResume.disabled = !uploadManager.paused;
-  globalUploadCancel.disabled = !active;
+  globalUploadCancel.disabled = pendingCount === 0;
 }
 
 function persistUploadManagerSnapshot() {
-  const sessions = [...uploadManager.sessions.values()].map((session) => ({
+  const userId = currentUser?.id;
+  if (!userId) return;
+  const sessions = pendingUploadSessions(uploadManager.sessions.values()).map((session) => ({
     ...session,
     files: session.files.map((file) => ({ ...file, needsReselect: !file.projectId && !uploadManager.fileHandles.has(file.id) })),
   }));
-  localStorage.setItem("klippharmaUploadSessions", JSON.stringify({ activeSessionId: uploadManager.activeSessionId, sessions }));
+  if (!sessions.length) {
+    localStorage.removeItem("klippharmaUploadSessions");
+    return;
+  }
+  localStorage.setItem("klippharmaUploadSessions", JSON.stringify({
+    version: 2,
+    userId,
+    activeSessionId: uploadManager.activeSessionId,
+    sessions,
+  }));
 }
 
-function restoreUploadManagerSnapshot() {
+function clearUploadManagerSessions() {
+  uploadManager.sessions.clear();
+  uploadManager.activeSessionId = null;
+  uploadManager.paused = false;
+  uploadManager.cancelled = false;
+}
+
+function restoreUploadManagerSnapshot(userId) {
   try {
     const snapshot = JSON.parse(localStorage.getItem("klippharmaUploadSessions") || "{}");
+    if (!uploadSnapshotBelongsToUser(snapshot, userId)) {
+      localStorage.removeItem("klippharmaUploadSessions");
+      clearUploadManagerSessions();
+      renderGlobalUploadManager();
+      return;
+    }
+    clearUploadManagerSessions();
     uploadManager.activeSessionId = snapshot.activeSessionId || null;
     (snapshot.sessions || []).forEach((session) => uploadManager.sessions.set(session.id, session));
     renderGlobalUploadManager();
   } catch {
     localStorage.removeItem("klippharmaUploadSessions");
+    clearUploadManagerSessions();
+    renderGlobalUploadManager();
   }
 }
 
@@ -679,10 +711,19 @@ async function loadActiveUploadSessions() {
     const response = await fetch("/api/uploads/sessions");
     const data = await response.json();
     if (!response.ok) return;
-    (data.sessions || []).forEach((session) => {
+    const browserSessionIds = new Set(uploadManager.sessions.keys());
+    const confirmedSessions = serverSessionsConfirmedByBrowser(data.sessions || [], browserSessionIds);
+    const serverSessionIds = new Set(confirmedSessions.map((session) => session.id));
+    for (const sessionId of uploadManager.sessions.keys()) {
+      if (!serverSessionIds.has(sessionId)) uploadManager.sessions.delete(sessionId);
+    }
+    confirmedSessions.forEach((session) => {
       mergeUploadSession(session);
       if (!uploadManager.activeSessionId) uploadManager.activeSessionId = session.id;
     });
+    if (uploadManager.activeSessionId && !serverSessionIds.has(uploadManager.activeSessionId)) {
+      uploadManager.activeSessionId = null;
+    }
     persistUploadManagerSnapshot();
     renderGlobalUploadManager();
   } catch {
@@ -4474,6 +4515,7 @@ async function bootstrapApplication() {
     if (!response.ok) throw new Error(data.error);
     if (data.authenticated) {
       showApplication(data.user);
+      restoreUploadManagerSnapshot(data.user?.id);
       loadBillingStatus();
       if (await acceptPendingInvitation()) return;
       await loadActiveUploadSessions();
@@ -4532,6 +4574,8 @@ function showApplication(user) {
 
 function showAuthentication() {
   currentUser = null;
+  clearUploadManagerSessions();
+  globalUploadManagerPanel?.classList.add("hidden");
   appShell.classList.add("hidden");
   accountMenu.classList.add("hidden");
   authView.classList.remove("hidden");

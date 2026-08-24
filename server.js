@@ -76,7 +76,7 @@ import {
   uploadSessionForClient,
   canAccessUploadSession as canAccessUploadSessionRecord,
 } from "./lib/upload-sessions.js";
-import { batchSourcesSettled, fitClipToRequestedLength, takeMontageSegmentsRoundRobin } from "./lib/batch-readiness.js";
+import { batchSourcesSettled, fitClipToRequestedLength, fitMontageSegmentToVideo, takeMontageSegmentsRoundRobin } from "./lib/batch-readiness.js";
 import {
   appendChromaKeyFilter,
   buildMontageTransitionGraph,
@@ -2060,6 +2060,29 @@ app.post("/api/projects/:id/montage/render", (req, res) => {
   res.status(202).json({ status: "rendering", revision: owner.montage.revision });
 });
 
+app.post("/api/projects/:id/montage/retry", (req, res) => {
+  const owner = ownedJob(req, req.params.id);
+  if (!owner?.montage) return res.status(404).json({ error: "Auto-Mix not found." });
+  if (batchMontageTasks.has(owner.batchId) || owner.montage.status === "rendering") {
+    return res.status(409).json({ error: "Wait for the current Auto-Mix render to finish." });
+  }
+  const group = [...jobs.values()]
+    .filter((job) => job.batchId === owner.batchId && canAccessJob(req, job))
+    .sort((a, b) => Number(a.batchPosition || 0) - Number(b.batchPosition || 0));
+  if (group.some((job) => job.status === "queued" || job.status === "processing")) {
+    return res.status(409).json({ error: "Wait for every source video to finish processing before retrying Auto-Mix." });
+  }
+  owner.montage.status = "waiting";
+  owner.montage.progress = 2;
+  owner.montage.revision = Number(owner.montage.revision || 1) + 1;
+  delete owner.montage.error;
+  delete owner.montage.errorCode;
+  delete owner.montage.downloadUrl;
+  persistJob(owner);
+  maybeStartBatchMontage(owner.batchId);
+  res.status(202).json({ status: owner.montage.status, revision: owner.montage.revision });
+});
+
 app.patch("/api/projects/:id/clips/:clipId", (req, res) => {
   const job = ownedJob(req, req.params.id);
   const clip = job?.clips?.find((item) => item.id === req.params.clipId);
@@ -2832,14 +2855,16 @@ async function processProject(job) {
   const audioOnly = isAudioOnly(job.filePath);
   const previewTask = audioOnly ? Promise.resolve(false) : generatePreview(job);
   const durationTask = probeDuration(command, job.filePath).catch(() => 0);
+  const videoDurationTask = audioOnly ? Promise.resolve(0) : probeVideoDuration(command, job.filePath).catch(() => 0);
   const audioTask = manualMode
     ? Promise.resolve()
     : run(command, [
       "-y", "-i", job.filePath, "-vn", "-ac", "1", "-ar", "16000",
       "-b:a", "48k", audioPath,
     ]);
-  const [, , mediaDuration] = await Promise.all([audioTask, previewTask, durationTask]);
-  job.duration = Math.max(1, Number(mediaDuration) || 1);
+  const [, , mediaDuration, videoDuration] = await Promise.all([audioTask, previewTask, durationTask, videoDurationTask]);
+  job.videoDuration = audioOnly ? 0 : Math.max(0, Number(videoDuration) || 0);
+  job.duration = Math.max(1, Number(audioOnly ? mediaDuration : videoDuration || mediaDuration) || 1);
   job.progress = 24;
   job.phase = "prepare";
   job.stage = job.silentSource ? "Silent source preview ready" : manualMode ? "Source preview ready" : "Audio and preview prepared";
@@ -3083,7 +3108,10 @@ async function chooseClips(job) {
     ],
   });
   const parsed = JSON.parse(response.choices[0].message.content || "{}");
-  const maxEnd = job.segments.at(-1)?.end || Infinity;
+  const maxEnd = Math.min(
+    Number(job.videoDuration || job.duration || Infinity),
+    Number(job.segments.at(-1)?.end || Infinity),
+  );
   return (parsed.clips || [])
     .map((clip) => {
       const proposedStart = Math.max(0, Number(clip.start));
@@ -3991,24 +4019,38 @@ function maybeStartBatchMontage(batchId) {
 }
 
 async function renderBatchMontage(group, owner, editedSegments = null, planTier = owner.planTier) {
-  await Promise.all(group.map((job) => ensureLocalSource(job)));
   const command = ffmpegPath || "ffmpeg";
+  await Promise.all(group.map(async (job) => {
+    await ensureLocalSource(job);
+    if (isAudioOnly(job.filePath) || Number(job.videoDuration) > 0) return;
+    job.videoDuration = await probeVideoDuration(command, job.filePath).catch(() => Number(job.duration) || 0);
+    if (Number(job.videoDuration) > 0) job.duration = Math.min(Number(job.duration) || Infinity, job.videoDuration);
+    persistJob(job);
+  }));
   const targetDuration = normalizeMontageLength(owner.montage.targetDuration);
   const style = normalizeMontageStyle(owner.montage.style);
   const selectedSegments = editedSegments?.length ? editedSegments : selectMontageSegments(group, targetDuration, style);
-  const segments = selectedSegments.map((segment) => ({
-    ...segment,
-    montageStyle: style,
-    transitionAfter: normalizeTransition(segment.transitionAfter),
-    chromaKeyEnabled: segment.chromaKeyEnabled === true,
-    chromaKeyColor: normalizeChromaColor(segment.chromaKeyColor),
-    chromaBackgroundColor: normalizeChromaColor(segment.chromaBackgroundColor, "#111111"),
-    chromaSimilarity: normalizeChromaSimilarity(segment.chromaSimilarity),
-    chromaBlend: normalizeChromaBlend(segment.chromaBlend),
-    captionText: typeof segment.captionText === "string"
-      ? segment.captionText.trim().slice(0, 1000)
-      : montageCaptionText(segment.job, segment.start, segment.start + segment.duration),
-  }));
+  const segments = selectedSegments.map((segment) => {
+    const timing = fitMontageSegmentToVideo(
+      segment.start,
+      segment.duration,
+      segment.job.videoDuration || segment.job.duration,
+    );
+    return {
+      ...segment,
+      ...timing,
+      montageStyle: style,
+      transitionAfter: normalizeTransition(segment.transitionAfter),
+      chromaKeyEnabled: segment.chromaKeyEnabled === true,
+      chromaKeyColor: normalizeChromaColor(segment.chromaKeyColor),
+      chromaBackgroundColor: normalizeChromaColor(segment.chromaBackgroundColor, "#111111"),
+      chromaSimilarity: normalizeChromaSimilarity(segment.chromaSimilarity),
+      chromaBlend: normalizeChromaBlend(segment.chromaBlend),
+      captionText: typeof segment.captionText === "string"
+        ? segment.captionText.trim().slice(0, 1000)
+        : montageCaptionText(segment.job, timing.start, timing.start + timing.duration),
+    };
+  }).filter((segment) => segment.duration >= 0.75);
   if (!segments.length) throw new Error("Auto-Mix needs at least one completed video source with an editable moment.");
 
   const transitionDuration = normalizeTransitionDuration(owner.montage.transitionDuration);
@@ -4085,6 +4127,11 @@ async function renderBatchMontage(group, owner, editedSegments = null, planTier 
           "-movflags", "+faststart", piecePath,
         ];
       await run(command, args);
+      if (!await probeHasVideo(command, piecePath)) {
+        const error = new Error("Auto-Mix could not read a complete video track for one selected moment.");
+        error.code = "AUTOMIX_VIDEO_TRACK_MISSING";
+        throw error;
+      }
       owner.montage.progress = Math.round(((index + 1) / (renderSegments.length + 1)) * 92);
       persistJob(owner);
     }
@@ -4293,7 +4340,7 @@ function selectMontageSegments(group, targetDuration, style) {
       const queue = [];
       for (const clip of clips) {
         let cursor = Math.max(0, Number(clip.start) || 0);
-        const end = Math.min(Number(job.duration || Infinity), Number(clip.end) || 0);
+        const end = Math.min(Number(job.videoDuration || job.duration || Infinity), Number(clip.end) || 0);
         let piecesFromClip = 0;
         while (end - cursor >= 1.25 && piecesFromClip < 12) {
           const duration = Math.min(pieceDuration, end - cursor);
@@ -4490,10 +4537,22 @@ function restoreInterruptedProject(job) {
       clip.renderError = "The last render was interrupted. Select Create vertical clip to restart it.";
     }
   }
+  const recoverVideoTrackMontage = job.montage?.status === "failed"
+    && Number(job.montage.automaticRetryCount || 0) < 1
+    && /matches no streams|error binding filtergraph|ffmpeg-static\/ffmpeg exited|complete video track/i.test(String(job.montage.error || ""));
+  if (recoverVideoTrackMontage) {
+    job.montage.status = "waiting";
+    job.montage.progress = 2;
+    job.montage.automaticRetryCount = Number(job.montage.automaticRetryCount || 0) + 1;
+    delete job.montage.error;
+    delete job.montage.errorCode;
+  }
   if (job.montage && (job.montage.status === "waiting" || job.montage.status === "rendering")) {
-    job.montage.status = "failed";
-    job.montage.progress = 100;
-    job.montage.error = "Auto-Mix was interrupted by a server restart. Your individual klips are still available.";
+    if (!recoverVideoTrackMontage) {
+      job.montage.status = "failed";
+      job.montage.progress = 100;
+      job.montage.error = "Auto-Mix was interrupted by a server restart. Your individual klips are still available.";
+    }
   }
 }
 
@@ -4697,12 +4756,33 @@ function probeHasVideo(command, inputPath) {
   });
 }
 
+function probeVideoDuration(command, inputPath) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, [
+      "-v", "error", "-progress", "pipe:2", "-nostats", "-i", inputPath,
+      "-map", "0:v:0", "-c:v", "copy", "-an", "-f", "null", "-",
+    ], { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-30000); });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const matches = [...stderr.matchAll(/out_time=(\d+):(\d+):([\d.]+)/g)];
+      const match = matches.at(-1);
+      if (code !== 0 || !match) return reject(new Error("Could not read the video-track duration."));
+      resolve((Number(match[1]) * 3600) + (Number(match[2]) * 60) + Number(match[3]));
+    });
+  });
+}
+
 function friendlyError(error) {
   if (isApiAuthenticationError(error)) return "AI processing credentials could not be authenticated.";
   if (error?.status === 429) return "The API account needs billing or has reached its usage limit.";
   if (error?.code === "ENOENT" && String(error?.message).includes("ffmpeg")) return "FFmpeg is required to process video files. Install it with: brew install ffmpeg";
   if (String(error?.message).toLowerCase().includes("invalid file format")) return "This video container could not be converted. Try MP4, MOV, WebM, or M4V.";
   if (String(error?.message).includes("Maximum content size")) return "The extracted audio section is too large to transcribe.";
+  if (error?.code === "AUTOMIX_VIDEO_TRACK_MISSING" || /matches no streams|error binding filtergraph|ffmpeg-static\/ffmpeg exited/i.test(String(error?.message || ""))) {
+    return "Auto-Mix could not read a complete video track from one selected moment. Your source videos and individual klips are safe; retry the Auto-Mix after every source is ready.";
+  }
   return redactSecrets(error?.message || "Something went wrong while processing the video.");
 }
 

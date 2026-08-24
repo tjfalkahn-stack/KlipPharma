@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const ASSET_VERSION = "0.29.15";
+const ASSET_VERSION = "0.29.16";
 window.__KLIPPHARMA_ASSET_VERSION__ = ASSET_VERSION;
 console.info("[KlipPharma dashboard] asset loaded", { version: ASSET_VERSION, path: window.location.pathname });
 
@@ -977,7 +977,7 @@ function renderMontage(projects) {
     const review = document.createElement("button");
     review.type = "button";
     review.className = "automix-review";
-    review.textContent = "Review & edit Auto-Mix";
+    review.textContent = "Transitions + Green Screen";
     const download = document.createElement("a");
     download.className = "automix-download";
     download.href = montage.downloadUrl;
@@ -1010,6 +1010,32 @@ function renderMontage(projects) {
     section.append(player, actions);
     const editor = buildMontageEditor(owner, projects, montage, player, review);
     section.append(editor);
+  } else if (montage.status === "failed") {
+    const actions = document.createElement("div");
+    actions.className = "automix-result-actions";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "automix-review";
+    retry.textContent = "Retry Auto-Mix";
+    retry.addEventListener("click", async () => {
+      retry.disabled = true;
+      retry.textContent = "Restarting…";
+      const response = await fetch(`/api/projects/${owner.id}/montage/retry`, { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) {
+        retry.disabled = false;
+        retry.textContent = "Retry Auto-Mix";
+        return toast(data.error || "Auto-Mix could not restart yet.");
+      }
+      toast("Auto-Mix restarted. This page will update automatically.");
+      setView("processing");
+      pollProjects();
+    });
+    const note = document.createElement("span");
+    note.className = "automix-retry-note";
+    note.textContent = "Your source videos and individual klips are still safe.";
+    actions.append(retry, note);
+    section.append(actions);
   }
   output.append(section);
 }
@@ -1401,7 +1427,7 @@ function buildMontageEditor(owner, projects, montage, finalPlayer, reviewButton)
   reviewButton.addEventListener("click", () => {
     const opening = editor.classList.contains("hidden");
     editor.classList.toggle("hidden", !opening);
-    reviewButton.textContent = opening ? "Close Auto-Mix Editor" : "Review & edit Auto-Mix";
+    reviewButton.textContent = opening ? "Close Auto-Mix Editor" : "Transitions + Green Screen";
     if (opening) editor.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 
@@ -1899,6 +1925,7 @@ function installTrimmer(project, clip, card) {
   const memePreviewImage = card.querySelector(".meme-preview-image");
   const memePreviewHeadline = card.querySelector(".meme-preview-headline");
   const greenScreenStudio = card.querySelector("[data-green-screen-studio]");
+  const greenScreenShortcut = card.querySelector(".green-screen-shortcut");
   const greenScreenLock = card.querySelector("[data-green-screen-lock]");
   const chromaEnabled = card.querySelector(".chroma-enabled");
   const chromaKeyColor = card.querySelector(".chroma-key-color");
@@ -2040,6 +2067,11 @@ function installTrimmer(project, clip, card) {
     greenScreenStudio.classList.toggle("enabled", state.chromaKeyEnabled);
   };
   paintGreenScreenControls();
+  greenScreenShortcut.addEventListener("click", () => {
+    greenScreenStudio.scrollIntoView({ behavior: "smooth", block: "center" });
+    greenScreenStudio.classList.add("attention");
+    window.setTimeout(() => greenScreenStudio.classList.remove("attention"), 1800);
+  });
   sourceVolume.value = String(state.sourceVolume);
   addedAudioVolume.value = String(state.addedAudioVolume);
   audioStart.value = String(state.audioStart);

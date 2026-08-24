@@ -4,6 +4,13 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
+## Version 0.29.16 — Auto-Mix video-track recovery
+
+- Uses the real video-stream duration when audio or container metadata runs longer than the picture.
+- Prevents audio-only temporary moments from reaching the transition renderer and automatically retries the affected production failure once.
+- Replaces raw FFmpeg diagnostics with a safe message and adds a visible Auto-Mix retry action.
+- Adds direct Green Screen Studio entry buttons for individual klips and finished Auto-Mixes.
+
 ## Version 0.29.15 — Transitions and Green Screen Studio
 
 - Adds eight automatic transition choices plus per-moment transition overrides in the Auto-Mix editor.

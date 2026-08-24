@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { batchSourcesSettled, fitClipToRequestedLength, takeMontageSegmentsRoundRobin } from "../lib/batch-readiness.js";
+import { batchSourcesSettled, fitClipToRequestedLength, fitMontageSegmentToVideo, takeMontageSegmentsRoundRobin } from "../lib/batch-readiness.js";
 
 function job(id, batchSize = 5) {
   return { id, batchSize, status: "ready" };
@@ -50,6 +50,11 @@ test("an explicit one-minute choice expands a short AI suggestion to sixty secon
 test("an explicit length shifts backward near the end and uses the whole source when shorter", () => {
   assert.deepEqual(fitClipToRequestedLength(150, 165, 180, 60), { start: 120, end: 180 });
   assert.deepEqual(fitClipToRequestedLength(0, 15, 42, 60), { start: 0, end: 42 });
+});
+
+test("Auto-Mix never selects moments beyond the real video track when audio is longer", () => {
+  assert.deepEqual(fitMontageSegmentToVideo(35, 3.5, 34.9), { start: 31.4, duration: 3.5 });
+  assert.deepEqual(fitMontageSegmentToVideo(2, 8, 5), { start: 0, duration: 5 });
 });
 
 test("a sixty-second Auto-Mix includes all five sources and fills the requested duration", () => {

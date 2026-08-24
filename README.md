@@ -4,6 +4,12 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
+## Version 0.29.15 — Transitions and Green Screen Studio
+
+- Adds eight automatic transition choices plus per-moment transition overrides in the Auto-Mix editor.
+- Preserves the requested Auto-Mix runtime while video and audio overlap through transitions.
+- Adds Green Screen Studio to individual clips and Auto-Mix moments with key color, replacement color, strength, and edge controls.
+
 ## Version 0.29.13 — Credential input hardening
 
 - Normalizes accidental spaces, line breaks, quotes, and variable-name prefixes before OpenAI authentication.

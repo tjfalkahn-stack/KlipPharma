@@ -78,6 +78,17 @@ import {
 } from "./lib/upload-sessions.js";
 import { batchSourcesSettled, fitClipToRequestedLength, takeMontageSegmentsRoundRobin } from "./lib/batch-readiness.js";
 import {
+  appendChromaKeyFilter,
+  buildMontageTransitionGraph,
+  normalizeChromaBlend,
+  normalizeChromaColor,
+  normalizeChromaSimilarity,
+  normalizeTransition,
+  normalizeTransitionDuration,
+  planMontageTransitions,
+  transitionLabel,
+} from "./lib/video-effects.js";
+import {
   applyKlipdoseHandoffState,
   klipdoseApiKeyFromEnv,
   klipdoseCallbackPayload,
@@ -1692,6 +1703,7 @@ function createProjectFromUploadSessionFile(req, session, file, stored) {
     createMontage: body.createMontage === true || body.createMontage === "true",
     montageLength: normalizeMontageLength(body.montageLength),
     montageStyle: normalizeMontageStyle(body.montageStyle),
+    montageTransition: normalizeTransition(body.montageTransition),
     watermarkText: normalizeWatermarkText(body.watermarkText),
     watermarkPosition: normalizeOverlayPosition(body.watermarkPosition),
     planTier: normalizePlanTier(req.user.planTier),
@@ -1711,6 +1723,8 @@ function createProjectFromUploadSessionFile(req, session, file, stored) {
       status: "waiting",
       targetDuration: job.montageLength,
       style: job.montageStyle,
+      transitionStyle: job.montageTransition,
+      transitionDuration: 0.35,
       sourceCount: session.files.length,
       captionsEnabled: session.files.some((item) => item.transcribe !== false),
       captionStyle: "bold",
@@ -1763,6 +1777,7 @@ function createProjectBatch(req, files, fileOptions = []) {
       createMontage: req.body.createMontage === true || req.body.createMontage === "true",
       montageLength: normalizeMontageLength(req.body.montageLength),
       montageStyle: normalizeMontageStyle(req.body.montageStyle),
+      montageTransition: normalizeTransition(req.body.montageTransition),
       watermarkText: normalizeWatermarkText(req.body.watermarkText),
       watermarkPosition: normalizeOverlayPosition(req.body.watermarkPosition),
       planTier: normalizePlanTier(req.user.planTier),
@@ -1785,6 +1800,8 @@ function createProjectBatch(req, files, fileOptions = []) {
       status: "waiting",
       targetDuration: owner.montageLength,
       style: owner.montageStyle,
+      transitionStyle: owner.montageTransition,
+      transitionDuration: 0.35,
       sourceCount: files.length,
       captionsEnabled: created.some((item) => item.processingMode === "ai"),
       captionStyle: "bold",
@@ -2010,6 +2027,8 @@ app.post("/api/projects/:id/montage/render", (req, res) => {
   if (typeof req.body.captionsEnabled === "boolean") owner.montage.captionsEnabled = req.body.captionsEnabled;
   if (new Set(["bold", "clean", "karaoke", "minimal"]).has(req.body.captionStyle)) owner.montage.captionStyle = req.body.captionStyle;
   if (new Set(["bottom", "middle", "top"]).has(req.body.captionPosition)) owner.montage.captionPosition = req.body.captionPosition;
+  owner.montage.transitionStyle = normalizeTransition(req.body.transitionStyle, owner.montage.transitionStyle || "auto");
+  owner.montage.transitionDuration = normalizeTransitionDuration(req.body.transitionDuration ?? owner.montage.transitionDuration);
   if (typeof req.body.watermarkText === "string") owner.watermarkText = normalizeWatermarkText(req.body.watermarkText);
   if (req.body.watermarkPosition) owner.watermarkPosition = normalizeOverlayPosition(req.body.watermarkPosition);
   owner.planTier = normalizePlanTier(req.user.planTier);
@@ -2064,6 +2083,15 @@ app.patch("/api/projects/:id/clips/:clipId", (req, res) => {
   if (typeof req.body.watermarkText === "string") clip.watermarkText = normalizeWatermarkText(req.body.watermarkText);
   if (req.body.watermarkPosition) clip.watermarkPosition = normalizeOverlayPosition(req.body.watermarkPosition);
   clip.focusX = normalizeFocusX(req.body.focusX, clip.focusX ?? 50);
+  if (hasCreativeAccess(req.user.planTier)) {
+    if (typeof req.body.chromaKeyEnabled === "boolean") clip.chromaKeyEnabled = req.body.chromaKeyEnabled;
+    clip.chromaKeyColor = normalizeChromaColor(req.body.chromaKeyColor || clip.chromaKeyColor);
+    clip.chromaBackgroundColor = normalizeChromaColor(req.body.chromaBackgroundColor || clip.chromaBackgroundColor, "#111111");
+    clip.chromaSimilarity = normalizeChromaSimilarity(req.body.chromaSimilarity ?? clip.chromaSimilarity);
+    clip.chromaBlend = normalizeChromaBlend(req.body.chromaBlend ?? clip.chromaBlend);
+  } else {
+    clip.chromaKeyEnabled = false;
+  }
   clip.sourceVolume = normalizeMixerPercent(req.body.sourceVolume, clip.sourceVolume ?? (job.audioTranslation === "dubbed" ? 16 : 100));
   clip.addedAudioVolume = normalizeMixerPercent(req.body.addedAudioVolume, clip.addedAudioVolume ?? 35);
   clip.audioStart = normalizeAudioSeconds(req.body.audioStart, clip.audioStart ?? 0, 90);
@@ -2841,6 +2869,11 @@ async function processProject(job) {
       watermarkText: job.watermarkText || "",
       watermarkPosition: job.watermarkPosition || "top-right",
       focusX: 50,
+      chromaKeyEnabled: false,
+      chromaKeyColor: "#00ff00",
+      chromaBackgroundColor: "#111111",
+      chromaSimilarity: 0.12,
+      chromaBlend: 0.06,
       sourceVolume: job.audioTranslation === "dubbed" ? 16 : 100,
       addedAudioVolume: 35,
       audioStart: 0,
@@ -2904,6 +2937,11 @@ async function processProject(job) {
     watermarkText: job.watermarkText || "",
     watermarkPosition: job.watermarkPosition || "top-right",
     focusX: 50,
+    chromaKeyEnabled: false,
+    chromaKeyColor: "#00ff00",
+    chromaBackgroundColor: "#111111",
+    chromaSimilarity: 0.12,
+    chromaBlend: 0.06,
     sourceVolume: job.audioTranslation === "dubbed" ? 16 : 100,
     addedAudioVolume: 35,
     audioStart: 0,
@@ -3079,6 +3117,13 @@ async function renderClip(job, clip, planTier = job.planTier) {
     const relevant = (job.segments || []).filter((s) => s.end > clip.start && s.start < clip.end);
     const duration = clip.end - clip.start;
     let filter = verticalCropFilter(clip.focusX, true);
+    filter = appendChromaKeyFilter(filter, {
+      enabled: hasCreativeAccess(planTier) && clip.chromaKeyEnabled === true,
+      keyColor: clip.chromaKeyColor,
+      backgroundColor: clip.chromaBackgroundColor,
+      similarity: clip.chromaSimilarity,
+      blend: clip.chromaBlend,
+    });
     const customCaptionText = String(clip.captionText || "").trim();
     const captionCues = customCaptionText
       ? captionCuesFromText(customCaptionText, duration)
@@ -3953,19 +3998,42 @@ async function renderBatchMontage(group, owner, editedSegments = null, planTier 
   const selectedSegments = editedSegments?.length ? editedSegments : selectMontageSegments(group, targetDuration, style);
   const segments = selectedSegments.map((segment) => ({
     ...segment,
+    montageStyle: style,
+    transitionAfter: normalizeTransition(segment.transitionAfter),
+    chromaKeyEnabled: segment.chromaKeyEnabled === true,
+    chromaKeyColor: normalizeChromaColor(segment.chromaKeyColor),
+    chromaBackgroundColor: normalizeChromaColor(segment.chromaBackgroundColor, "#111111"),
+    chromaSimilarity: normalizeChromaSimilarity(segment.chromaSimilarity),
+    chromaBlend: normalizeChromaBlend(segment.chromaBlend),
     captionText: typeof segment.captionText === "string"
       ? segment.captionText.trim().slice(0, 1000)
       : montageCaptionText(segment.job, segment.start, segment.start + segment.duration),
   }));
   if (!segments.length) throw new Error("Auto-Mix needs at least one completed video source with an editable moment.");
 
+  const transitionDuration = normalizeTransitionDuration(owner.montage.transitionDuration);
+  const renderSegments = planMontageTransitions(
+    segments,
+    owner.montage.transitionStyle,
+    style,
+    transitionDuration,
+  );
+
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "klippharma-automix-"));
   const pendingOutputPath = path.join(exportDir, `.${owner.batchId}-automix-r${Number(owner.montage.revision || 1)}.pending.mp4`);
   try {
-    for (let index = 0; index < segments.length; index += 1) {
-      const segment = segments[index];
+    for (let index = 0; index < renderSegments.length; index += 1) {
+      const segment = renderSegments[index];
+      const pieceDuration = segment.renderDuration;
       const piecePath = path.join(tempDir, `piece-${String(index).padStart(3, "0")}.mp4`);
       let filter = verticalCropFilter(segment.focusX, true);
+      filter = appendChromaKeyFilter(filter, {
+        enabled: hasCreativeAccess(planTier) && segment.chromaKeyEnabled === true,
+        keyColor: segment.chromaKeyColor,
+        backgroundColor: segment.chromaBackgroundColor,
+        similarity: segment.chromaSimilarity,
+        blend: segment.chromaBlend,
+      });
       if (owner.montage.captionsEnabled !== false && segment.captionText) {
         const captionPath = path.join(tempDir, `captions-${String(index).padStart(3, "0")}.ass`);
         const cues = captionCuesFromText(segment.captionText, segment.duration);
@@ -3973,12 +4041,15 @@ async function renderBatchMontage(group, owner, editedSegments = null, planTier 
         filter += watermarkFilter(captionPath);
       }
       filter = appendExportWatermarks(filter, tempDir, {
-        duration: segment.duration,
+        duration: pieceDuration,
         customText: owner.watermarkText,
         customPosition: owner.watermarkPosition,
         brandRequired: !hasPaidPlan(planTier),
         prefix: `automix-${String(index).padStart(3, "0")}`,
       });
+      if (pieceDuration > segment.duration) {
+        filter += `,tpad=stop_mode=clone:stop_duration=${transitionDuration}`;
+      }
       const hasAudio = await probeHasAudio(command, segment.job.filePath);
       const dubPath = segment.job.audioTranslation === "dubbed"
         && segment.job.translationLanguage !== "original"
@@ -3988,10 +4059,10 @@ async function renderBatchMontage(group, owner, editedSegments = null, planTier 
       const args = dubPath
         ? [
           "-y", "-fflags", "+genpts", "-ss", String(segment.start), "-i", segment.job.filePath, "-i", dubPath,
-          "-t", String(segment.duration),
+          "-t", String(pieceDuration),
           "-filter_complex", hasAudio
-            ? `[0:a]volume=0.16[bed];[1:a]volume=1,apad,atrim=0:${segment.duration}[voice];[bed][voice]amix=inputs=2:duration=first:normalize=0[a]`
-            : `[1:a]volume=1,apad,atrim=0:${segment.duration}[a]`,
+            ? `[0:a]volume=0.16,apad,atrim=0:${pieceDuration}[bed];[1:a]volume=1,apad,atrim=0:${pieceDuration}[voice];[bed][voice]amix=inputs=2:duration=longest:normalize=0,atrim=0:${pieceDuration}[a]`
+            : `[1:a]volume=1,apad,atrim=0:${pieceDuration}[a]`,
           "-map", "0:v:0", "-map", "[a]", "-vf", filter,
           ...quickTimeVideoArgs("23"), ...quickTimeAudioArgs("160k"),
           "-sn", "-dn", "-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "2048",
@@ -3999,28 +4070,28 @@ async function renderBatchMontage(group, owner, editedSegments = null, planTier 
         ]
         : hasAudio
         ? [
-          "-y", "-fflags", "+genpts", "-ss", String(segment.start), "-i", segment.job.filePath, "-t", String(segment.duration),
-          "-map", "0:v:0", "-map", "0:a:0?", "-vf", filter,
+          "-y", "-fflags", "+genpts", "-ss", String(segment.start), "-i", segment.job.filePath, "-t", String(pieceDuration),
+          "-map", "0:v:0", "-map", "0:a:0?", "-vf", filter, "-af", "apad",
           ...quickTimeVideoArgs("23"), ...quickTimeAudioArgs("160k"),
           "-sn", "-dn", "-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "2048",
           "-movflags", "+faststart", piecePath,
         ]
         : [
           "-y", "-fflags", "+genpts", "-ss", String(segment.start), "-i", segment.job.filePath,
-          "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", String(segment.duration),
+          "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", String(pieceDuration),
           "-map", "0:v:0", "-map", "1:a:0", "-vf", filter,
           ...quickTimeVideoArgs("23"), ...quickTimeAudioArgs("160k"), "-shortest",
           "-sn", "-dn", "-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "2048",
           "-movflags", "+faststart", piecePath,
         ];
       await run(command, args);
-      owner.montage.progress = Math.round(((index + 1) / (segments.length + 1)) * 92);
+      owner.montage.progress = Math.round(((index + 1) / (renderSegments.length + 1)) * 92);
       persistJob(owner);
     }
 
+    const piecePaths = renderSegments.map((_segment, index) => path.join(tempDir, `piece-${String(index).padStart(3, "0")}.mp4`));
     const concatPath = path.join(tempDir, "concat.txt");
-    fs.writeFileSync(concatPath, segments
-      .map((_segment, index) => path.join(tempDir, `piece-${String(index).padStart(3, "0")}.mp4`))
+    fs.writeFileSync(concatPath, piecePaths
       .map((item) => `file '${item.replaceAll("\\", "/").replaceAll("'", "'\\''")}'`)
       .join("\n"));
     const outputName = `${owner.batchId}-automix.mp4`;
@@ -4029,21 +4100,36 @@ async function renderBatchMontage(group, owner, editedSegments = null, planTier 
     const sourceVolume = normalizeMixerPercent(owner.montage.sourceVolume, 100) / 100;
     const addedAudioVolume = normalizeMixerPercent(owner.montage.addedAudioVolume, 35) / 100;
     const hasAddedAudio = Boolean(owner.montageAudioPath && fs.existsSync(owner.montageAudioPath));
-    if (!hasAddedAudio && sourceVolume === 1) {
+    const transitionGraph = buildMontageTransitionGraph(
+      renderSegments,
+      owner.montage.transitionStyle,
+      transitionDuration,
+    );
+    const assemble = async (destination) => {
+      if (transitionGraph) {
+        await run(command, [
+          "-y", ...piecePaths.flatMap((piecePath) => ["-i", piecePath]),
+          "-filter_complex", transitionGraph.filterComplex,
+          "-map", transitionGraph.videoMap, "-map", transitionGraph.audioMap,
+          "-t", String(duration),
+          ...quickTimeVideoArgs("23"), ...quickTimeAudioArgs("192k"),
+          "-sn", "-dn", "-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "4096",
+          "-movflags", "+faststart", destination,
+        ]);
+        return;
+      }
       await run(command, [
         "-y", "-fflags", "+genpts", "-f", "concat", "-safe", "0", "-i", concatPath,
         "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
         "-tag:v", "avc1", "-video_track_timescale", "30000",
-        "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", pendingOutputPath,
+        "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", destination,
       ]);
+    };
+    if (!hasAddedAudio && sourceVolume === 1) {
+      await assemble(pendingOutputPath);
     } else {
       const assembledPath = path.join(tempDir, "assembled.mp4");
-      await run(command, [
-        "-y", "-fflags", "+genpts", "-f", "concat", "-safe", "0", "-i", concatPath,
-        "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
-        "-tag:v", "avc1", "-video_track_timescale", "30000",
-        "-avoid_negative_ts", "make_zero", assembledPath,
-      ]);
+      await assemble(assembledPath);
       owner.montage.progress = 96;
       persistJob(owner);
       if (hasAddedAudio) {
@@ -4095,8 +4181,10 @@ async function renderBatchMontage(group, owner, editedSegments = null, planTier 
     Object.assign(owner.montage, {
       status: "ready",
       progress: 100,
-      title: `Batch Auto-Mix · ${montageStyleLabel(style)}`,
+      title: `Batch Auto-Mix · ${montageStyleLabel(style)} · ${transitionLabel(owner.montage.transitionStyle)}`,
       duration: Math.round(duration * 10) / 10,
+      transitionStyle: normalizeTransition(owner.montage.transitionStyle),
+      transitionDuration: normalizeTransitionDuration(owner.montage.transitionDuration),
       sourceCount: new Set(segments.map((segment) => segment.job.id)).size,
       segments: segments.map((segment) => ({
         sourceId: segment.job.id,
@@ -4106,6 +4194,12 @@ async function renderBatchMontage(group, owner, editedSegments = null, planTier 
         end: Math.round((segment.start + segment.duration) * 100) / 100,
         captionText: segment.captionText,
         focusX: normalizeFocusX(segment.focusX),
+        transitionAfter: normalizeTransition(segment.transitionAfter),
+        chromaKeyEnabled: hasCreativeAccess(planTier) && segment.chromaKeyEnabled === true,
+        chromaKeyColor: normalizeChromaColor(segment.chromaKeyColor),
+        chromaBackgroundColor: normalizeChromaColor(segment.chromaBackgroundColor, "#111111"),
+        chromaSimilarity: normalizeChromaSimilarity(segment.chromaSimilarity),
+        chromaBlend: normalizeChromaBlend(segment.chromaBlend),
       })),
       downloadUrl: `/exports/${outputName}?v=${Number(owner.montage.revision || 1)}`,
     });
@@ -4139,6 +4233,12 @@ function hydrateMontageSegments(group, requested) {
       duration: Math.round((end - start) * 100) / 100,
       captionText: String(item.captionText || "").trim().slice(0, 1000),
       focusX: normalizeFocusX(item.focusX),
+      transitionAfter: normalizeTransition(item.transitionAfter),
+      chromaKeyEnabled: item.chromaKeyEnabled === true,
+      chromaKeyColor: normalizeChromaColor(item.chromaKeyColor),
+      chromaBackgroundColor: normalizeChromaColor(item.chromaBackgroundColor, "#111111"),
+      chromaSimilarity: normalizeChromaSimilarity(item.chromaSimilarity),
+      chromaBlend: normalizeChromaBlend(item.chromaBlend),
     };
   });
   const duration = hydrated.reduce((sum, segment) => sum + segment.duration, 0);

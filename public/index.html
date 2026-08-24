@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=0.29.13" />
+  <link rel="stylesheet" href="/styles.css?v=0.29.15" />
 </head>
 <body>
   <header class="topbar">
@@ -194,7 +194,10 @@
                 <label class="length-option"><input type="radio" name="montageLength" value="90" /><span><strong>1:30</strong><small>Full</small></span></label>
               </div>
             </div>
-            <label class="automix-style"><span>EDITING STYLE</span><select name="montageStyle"><option value="fast">Fast &amp; Punchy</option><option value="story">Smooth Story</option><option value="music">Music Energy</option><option value="promo">Clean Promo</option></select></label>
+            <div class="automix-select-grid">
+              <label class="automix-style"><span>EDITING STYLE</span><select name="montageStyle"><option value="fast">Fast &amp; Punchy</option><option value="story">Smooth Story</option><option value="music">Music Energy</option><option value="promo">Clean Promo</option></select></label>
+              <label class="automix-style"><span>AUTOMATIC TRANSITIONS</span><select name="montageTransition"><option value="auto">Smart for the editing style</option><option value="cut">Clean cuts only</option><option value="fade">Cross dissolve</option><option value="fadeblack">Dip to black</option><option value="slideleft">Slide left</option><option value="slideright">Slide right</option><option value="zoomin">Zoom</option><option value="pixelize">Digital pixel</option></select><small>You can change every transition individually in the Auto-Mix editor.</small></label>
+            </div>
           </div>
         </section>
         <button class="primary" type="submit"><span>Find my dopest klips</span><b>→</b></button>
@@ -376,6 +379,25 @@
               <div class="clip-dub-status"><small>EXPORT AUDIO</small><strong>ORIGINAL VOICE</strong><span>Build the exact final preview to hear this mix.</span></div>
             </div>
           </section>
+          <section class="green-screen-studio" data-green-screen-studio>
+            <div class="meme-studio-head">
+              <div>
+                <small>PRO CREATIVE TOOL</small>
+                <strong>Green Screen Studio</strong>
+                <p>Remove a green or blue background and replace it with your chosen color.</p>
+              </div>
+              <label class="caption-toggle chroma-toggle"><input class="chroma-enabled" type="checkbox" /><span></span><b>Enable</b></label>
+              <b class="pro-badge" data-pro-badge>PRO</b>
+            </div>
+            <div class="green-screen-controls">
+              <label><span>SCREEN COLOR</span><span class="meme-color-control"><input class="chroma-key-color" type="color" value="#00ff00" /><output class="chroma-key-color-value">#00FF00</output></span></label>
+              <label><span>NEW BACKGROUND</span><span class="meme-color-control"><input class="chroma-background-color" type="color" value="#111111" /><output class="chroma-background-color-value">#111111</output></span></label>
+              <label><span>KEY STRENGTH <output class="chroma-similarity-value">12%</output></span><input class="chroma-similarity" type="range" min="1" max="60" step="1" value="12" /></label>
+              <label><span>EDGE SOFTNESS <output class="chroma-blend-value">6%</output></span><input class="chroma-blend" type="range" min="0" max="50" step="1" value="6" /></label>
+              <p>Use the exact final preview to inspect the removed background and edges before download.</p>
+            </div>
+            <div class="meme-pro-lock hidden" data-green-screen-lock><strong>Pro feature</strong><span>Upgrade to Pro to use Green Screen Studio.</span></div>
+          </section>
           <div class="watermark-grid">
             <label><span>TEXT WATERMARK <small>OPTIONAL</small></span><input class="watermark-text" maxlength="80" placeholder="@yourhandle or Brand Name" /></label>
             <label><span>POSITION</span><select class="watermark-position"><option value="top-right">Top right</option><option value="top-left">Top left</option><option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option></select></label>
@@ -392,7 +414,7 @@
           <div class="final-render-copy">
             <small>EXACT PRE-EXPORT REVIEW</small>
             <strong>Preview the finished klip</strong>
-            <p>This is the actual rendered MP4—including your edited words, meme or picture, framing, timing, watermark, and audio. Approve it before downloading.</p>
+            <p>This is the actual rendered MP4—including your edited words, green screen, meme or picture, framing, timing, watermark, and audio. Approve it before downloading.</p>
           </div>
           <video class="final-render-video" controls preload="metadata" playsinline></video>
           <span class="final-render-saved">Saved to this project automatically</span>
@@ -626,6 +648,6 @@
   </div>
 
   <div class="toast hidden" id="toast"></div>
-  <script src="/app.js?v=0.29.14" type="module"></script>
+  <script src="/app.js?v=0.29.15" type="module"></script>
 </body>
 </html>

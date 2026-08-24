@@ -4,12 +4,16 @@ import {
   serverSessionsConfirmedByBrowser,
   uploadFileNeedsDevice,
   uploadSnapshotBelongsToUser,
-} from "./upload-manager-state.js?v=0.29.18";
+} from "./upload-manager-state.js?v=0.29.19";
 
 const $ = (selector) => document.querySelector(selector);
-const ASSET_VERSION = "0.29.18";
+const ASSET_VERSION = "0.29.19";
 window.__KLIPPHARMA_ASSET_VERSION__ = ASSET_VERSION;
 console.info("[KlipPharma dashboard] asset loaded", { version: ASSET_VERSION, path: window.location.pathname });
+
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) window.location.reload();
+});
 
 const nativeFetch = window.fetch.bind(window);
 let recoveringExpiredSession = false;
@@ -708,10 +712,13 @@ function restoreUploadManagerSnapshot(userId) {
 
 async function loadActiveUploadSessions() {
   try {
-    const response = await fetch("/api/uploads/sessions");
+    const browserSessionIds = new Set(uploadManager.sessions.keys());
+    const query = browserSessionIds.size
+      ? `?ids=${encodeURIComponent([...browserSessionIds].slice(0, 20).join(","))}`
+      : "";
+    const response = await fetch(`/api/uploads/sessions${query}`, { cache: "no-store" });
     const data = await response.json();
     if (!response.ok) return;
-    const browserSessionIds = new Set(uploadManager.sessions.keys());
     const confirmedSessions = serverSessionsConfirmedByBrowser(data.sessions || [], browserSessionIds);
     const serverSessionIds = new Set(confirmedSessions.map((session) => session.id));
     for (const sessionId of uploadManager.sessions.keys()) {

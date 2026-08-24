@@ -68,6 +68,7 @@ import {
   attachMultipartUpload,
   createUploadSession,
   findUploadFile,
+  listUploadSessionsForClient,
   markUploadFileCompleted,
   objectKeyForUploadFile,
   recordUploadPart,
@@ -279,9 +280,18 @@ app.post("/api/billing/webhook", express.raw({ type: "application/json" }), asyn
 });
 
 app.use(express.json({ limit: "2mb" }));
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(path.join(__dirname, "public"), {
+  setHeaders(res, filePath) {
+    if (new Set(["index.html", "app.js", "upload-manager-state.js"]).has(path.basename(filePath))) {
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+    }
+  },
+}));
 
 app.get("/dashboard", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
@@ -1222,8 +1232,15 @@ app.post("/api/uploads/presign", async (req, res) => {
 });
 
 app.get("/api/uploads/sessions", (req, res) => {
-  const sessions = [...uploadSessions.values()]
-    .filter((session) => canAccessUploadSession(req, session))
+  const requestedIds = String(req.query.ids || "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter((id) => /^[0-9a-f-]{16,64}$/i.test(id))
+    .slice(0, 20);
+  const sessions = listUploadSessionsForClient(
+    [...uploadSessions.values()].filter((session) => canAccessUploadSession(req, session)),
+    { requestedIds },
+  )
     .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
     .slice(0, 20)
     .map(uploadSessionForClient);

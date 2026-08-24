@@ -4,6 +4,13 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
+## Version 0.29.19 — Server-enforced stale upload cleanup
+
+- Stops the upload-session API from returning abandoned sessions to older cached dashboards after 30 minutes of inactivity.
+- Allows a current, owner-scoped browser snapshot to request its exact resumable session without sacrificing durable uploads.
+- Disables caching for the dashboard shell and upload-state modules and forces a reload when iOS restores the page from its back-forward cache.
+- Busts the mobile asset version again so Safari cannot keep running the stale v0.29.18 page.
+
 ## Version 0.29.18 — Auth-scoped upload-state reconciliation
 
 - Clears legacy or cross-account browser upload snapshots instead of restoring them before authentication.

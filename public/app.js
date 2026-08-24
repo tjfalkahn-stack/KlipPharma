@@ -1,13 +1,14 @@
 import {
   pendingUploadSessions,
+  restorableUploadSessions,
   selectUploadSessionNeedingDevice,
   serverSessionsConfirmedByBrowser,
   uploadFileNeedsDevice,
   uploadSnapshotBelongsToUser,
-} from "./upload-manager-state.js?v=0.29.19";
+} from "./upload-manager-state.js?v=0.29.20";
 
 const $ = (selector) => document.querySelector(selector);
-const ASSET_VERSION = "0.29.19";
+const ASSET_VERSION = "0.29.20";
 window.__KLIPPHARMA_ASSET_VERSION__ = ASSET_VERSION;
 console.info("[KlipPharma dashboard] asset loaded", { version: ASSET_VERSION, path: window.location.pathname });
 
@@ -701,7 +702,8 @@ function restoreUploadManagerSnapshot(userId) {
     }
     clearUploadManagerSessions();
     uploadManager.activeSessionId = snapshot.activeSessionId || null;
-    (snapshot.sessions || []).forEach((session) => uploadManager.sessions.set(session.id, session));
+    restorableUploadSessions(snapshot.sessions).forEach((session) => uploadManager.sessions.set(session.id, session));
+    if (!uploadManager.sessions.has(uploadManager.activeSessionId)) uploadManager.activeSessionId = null;
     renderGlobalUploadManager();
   } catch {
     localStorage.removeItem("klippharmaUploadSessions");

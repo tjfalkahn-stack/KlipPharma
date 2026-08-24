@@ -18,6 +18,19 @@ test("abandoned upload sessions are not returned to a cached dashboard", () => {
   assert.deepEqual(listUploadSessionsForClient([abandoned], { now }), []);
 });
 
+test("a requested abandoned upload still expires unless the user paused it", () => {
+  const abandoned = {
+    id: "aaaa1111-bbbb-2222-cccc-3333dddd4444",
+    updatedAt: "2026-08-24T12:00:00.000Z",
+    files: [{ status: "interrupted", projectId: null }],
+  };
+
+  assert.deepEqual(listUploadSessionsForClient([abandoned], {
+    now,
+    requestedIds: [abandoned.id],
+  }), []);
+});
+
 test("recent active uploads remain visible", () => {
   const active = {
     id: "active-session",

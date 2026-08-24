@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const ASSET_VERSION = "0.29.14";
+const ASSET_VERSION = "0.29.15";
 window.__KLIPPHARMA_ASSET_VERSION__ = ASSET_VERSION;
 console.info("[KlipPharma dashboard] asset loaded", { version: ASSET_VERSION, path: window.location.pathname });
 
@@ -394,6 +394,7 @@ function uploadSettingsFromForm(formData) {
     createMontage: formData.get("createMontage") === "true",
     montageLength: formData.get("montageLength"),
     montageStyle: formData.get("montageStyle"),
+    montageTransition: formData.get("montageTransition"),
     watermarkText: formData.get("watermarkText"),
     watermarkPosition: formData.get("watermarkPosition"),
     sourceLanguage: formData.get("sourceLanguage"),
@@ -1028,6 +1029,8 @@ function buildMontageEditor(owner, projects, montage, finalPlayer, reviewButton)
       <label><span>CAPTION POSITION</span><select class="automix-caption-position"><option value="bottom">Bottom</option><option value="middle">Middle</option><option value="top">Top</option></select></label>
       <label><span>TEXT WATERMARK</span><input class="automix-watermark-text" maxlength="80" placeholder="@yourhandle or Brand Name" /></label>
       <label><span>WATERMARK POSITION</span><select class="automix-watermark-position"><option value="top-right">Top right</option><option value="top-left">Top left</option><option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option></select></label>
+      <label><span>DEFAULT TRANSITION</span><select class="automix-transition-style"><option value="auto">Smart for editing style</option><option value="cut">Clean cut</option><option value="fade">Cross dissolve</option><option value="fadeblack">Dip to black</option><option value="slideleft">Slide left</option><option value="slideright">Slide right</option><option value="zoomin">Zoom</option><option value="pixelize">Digital pixel</option></select></label>
+      <label class="automix-transition-speed"><span>TRANSITION LENGTH <output></output></span><input type="range" min="0.15" max="1.25" step="0.05" /></label>
     </div>
     <div class="brand-policy" data-brand-policy>
       <span class="brand-policy-mark">KP</span>
@@ -1076,6 +1079,9 @@ function buildMontageEditor(owner, projects, montage, finalPlayer, reviewButton)
   const captionPosition = editor.querySelector(".automix-caption-position");
   const watermarkText = editor.querySelector(".automix-watermark-text");
   const watermarkPosition = editor.querySelector(".automix-watermark-position");
+  const transitionStyle = editor.querySelector(".automix-transition-style");
+  const transitionDuration = editor.querySelector(".automix-transition-speed input");
+  const transitionDurationOutput = editor.querySelector(".automix-transition-speed output");
   const mixPreset = editor.querySelector(".automix-mix-preset");
   const sourceVolume = editor.querySelector(".automix-source-volume");
   const addedAudioVolume = editor.querySelector(".automix-added-volume");
@@ -1096,6 +1102,11 @@ function buildMontageEditor(owner, projects, montage, finalPlayer, reviewButton)
   captionPosition.value = montage.captionPosition || "bottom";
   watermarkText.value = owner.watermarkText || "";
   watermarkPosition.value = owner.watermarkPosition || "top-right";
+  transitionStyle.value = montage.transitionStyle || "auto";
+  transitionDuration.value = String(montage.transitionDuration ?? 0.35);
+  const paintTransitionDuration = () => { transitionDurationOutput.textContent = `${Number(transitionDuration.value).toFixed(2)}s`; };
+  transitionDuration.addEventListener("input", paintTransitionDuration);
+  paintTransitionDuration();
   sourceVolume.value = String(montage.sourceVolume ?? 100);
   addedAudioVolume.value = String(montage.addedAudioVolume ?? 35);
   audioStart.value = String(montage.audioStart ?? 0);
@@ -1253,6 +1264,44 @@ function buildMontageEditor(owner, projects, montage, finalPlayer, reviewButton)
       focusOutput.textContent = `${Math.round(Number(focusInput.value))}%`;
       framingLabel.append(focusInput, focusOutput);
 
+      const effects = document.createElement("div");
+      effects.className = "automix-moment-effects";
+      const transitionControl = document.createElement("label");
+      transitionControl.innerHTML = `<span>TRANSITION AFTER THIS MOMENT</span><select><option value="auto">Use Auto-Mix default</option><option value="cut">Clean cut</option><option value="fade">Cross dissolve</option><option value="fadeblack">Dip to black</option><option value="slideleft">Slide left</option><option value="slideright">Slide right</option><option value="zoomin">Zoom</option><option value="pixelize">Digital pixel</option></select>`;
+      const transitionSelect = transitionControl.querySelector("select");
+      transitionSelect.value = moment.transitionAfter || "auto";
+      if (index === moments.length - 1) {
+        transitionSelect.value = "cut";
+        transitionSelect.disabled = true;
+        transitionControl.querySelector("span").textContent = "LAST MOMENT · NO TRANSITION AFTER";
+      }
+      const chromaControl = document.createElement("div");
+      chromaControl.className = "automix-moment-chroma";
+      chromaControl.innerHTML = `
+        <label class="automix-check"><input class="moment-chroma-enabled" type="checkbox" /><span>Green screen this moment</span></label>
+        <label><span>SCREEN</span><input class="moment-chroma-key" type="color" value="#00ff00" /></label>
+        <label><span>BACKGROUND</span><input class="moment-chroma-background" type="color" value="#111111" /></label>
+        <label><span>KEY <output></output></span><input class="moment-chroma-similarity" type="range" min="1" max="60" step="1" /></label>
+        <label><span>EDGE <output></output></span><input class="moment-chroma-blend" type="range" min="0" max="50" step="1" /></label>`;
+      const chromaEnabled = chromaControl.querySelector(".moment-chroma-enabled");
+      const chromaKey = chromaControl.querySelector(".moment-chroma-key");
+      const chromaBackground = chromaControl.querySelector(".moment-chroma-background");
+      const chromaSimilarity = chromaControl.querySelector(".moment-chroma-similarity");
+      const chromaBlend = chromaControl.querySelector(".moment-chroma-blend");
+      chromaEnabled.checked = hasCreativeAccess() && moment.chromaKeyEnabled === true;
+      chromaKey.value = moment.chromaKeyColor || "#00ff00";
+      chromaBackground.value = moment.chromaBackgroundColor || "#111111";
+      chromaSimilarity.value = String(Math.round(Number(moment.chromaSimilarity ?? 0.12) * 100));
+      chromaBlend.value = String(Math.round(Number(moment.chromaBlend ?? 0.06) * 100));
+      const paintChromaValues = () => {
+        chromaSimilarity.closest("label").querySelector("output").textContent = `${chromaSimilarity.value}%`;
+        chromaBlend.closest("label").querySelector("output").textContent = `${chromaBlend.value}%`;
+      };
+      chromaControl.querySelectorAll("input").forEach((control) => { control.disabled = !hasCreativeAccess(); });
+      if (!hasCreativeAccess()) chromaControl.insertAdjacentHTML("beforeend", "<small>Green Screen Studio is available on Pro.</small>");
+      paintChromaValues();
+      effects.append(transitionControl, chromaControl);
+
       const tools = document.createElement("div");
       tools.className = "automix-moment-tools";
       const preview = document.createElement("button");
@@ -1294,6 +1343,18 @@ function buildMontageEditor(owner, projects, montage, finalPlayer, reviewButton)
           sourcePreview.style.objectPosition = `${moment.focusX}% center`;
         }
       });
+      transitionSelect.addEventListener("change", () => { moment.transitionAfter = transitionSelect.value; });
+      chromaEnabled.addEventListener("change", () => { moment.chromaKeyEnabled = chromaEnabled.checked; });
+      chromaKey.addEventListener("input", () => { moment.chromaKeyColor = chromaKey.value; });
+      chromaBackground.addEventListener("input", () => { moment.chromaBackgroundColor = chromaBackground.value; });
+      chromaSimilarity.addEventListener("input", () => {
+        moment.chromaSimilarity = Number(chromaSimilarity.value) / 100;
+        paintChromaValues();
+      });
+      chromaBlend.addEventListener("input", () => {
+        moment.chromaBlend = Number(chromaBlend.value) / 100;
+        paintChromaValues();
+      });
       preview.addEventListener("click", async () => {
         const url = source?.previewUrl || source?.sourceUrl;
         if (!url) return toast("This source preview is unavailable.");
@@ -1326,7 +1387,7 @@ function buildMontageEditor(owner, projects, montage, finalPlayer, reviewButton)
         paint();
       });
 
-      row.append(identity, timing, framingLabel, captionLabel, tools);
+      row.append(identity, timing, framingLabel, captionLabel, effects, tools);
       sequence.append(row);
     });
   };
@@ -1351,6 +1412,9 @@ function buildMontageEditor(owner, projects, montage, finalPlayer, reviewButton)
     captionPosition.value = montage.captionPosition || "bottom";
     watermarkText.value = owner.watermarkText || "";
     watermarkPosition.value = owner.watermarkPosition || "top-right";
+    transitionStyle.value = montage.transitionStyle || "auto";
+    transitionDuration.value = String(montage.transitionDuration ?? 0.35);
+    paintTransitionDuration();
     mixPreset.value = "custom";
     sourceVolume.value = String(montage.sourceVolume ?? 100);
     addedAudioVolume.value = String(montage.addedAudioVolume ?? 35);
@@ -1377,12 +1441,20 @@ function buildMontageEditor(owner, projects, montage, finalPlayer, reviewButton)
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        segments: moments.map(({ sourceId, start, end, captionText, focusX }) => ({ sourceId, start, end, captionText, focusX })),
+        segments: moments.map(({
+          sourceId, start, end, captionText, focusX, transitionAfter,
+          chromaKeyEnabled, chromaKeyColor, chromaBackgroundColor, chromaSimilarity, chromaBlend,
+        }) => ({
+          sourceId, start, end, captionText, focusX, transitionAfter,
+          chromaKeyEnabled, chromaKeyColor, chromaBackgroundColor, chromaSimilarity, chromaBlend,
+        })),
         captionsEnabled: captionsEnabled.checked,
         captionStyle: captionStyle.value,
         captionPosition: captionPosition.value,
         watermarkText: watermarkText.value,
         watermarkPosition: watermarkPosition.value,
+        transitionStyle: transitionStyle.value,
+        transitionDuration: Number(transitionDuration.value),
         sourceVolume: Number(sourceVolume.value),
         addedAudioVolume: Number(addedAudioVolume.value),
         audioStart: Number(audioStart.value),
@@ -1826,6 +1898,17 @@ function installTrimmer(project, clip, card) {
   const memePreviewLayer = card.querySelector(".meme-preview-layer");
   const memePreviewImage = card.querySelector(".meme-preview-image");
   const memePreviewHeadline = card.querySelector(".meme-preview-headline");
+  const greenScreenStudio = card.querySelector("[data-green-screen-studio]");
+  const greenScreenLock = card.querySelector("[data-green-screen-lock]");
+  const chromaEnabled = card.querySelector(".chroma-enabled");
+  const chromaKeyColor = card.querySelector(".chroma-key-color");
+  const chromaKeyColorValue = card.querySelector(".chroma-key-color-value");
+  const chromaBackgroundColor = card.querySelector(".chroma-background-color");
+  const chromaBackgroundColorValue = card.querySelector(".chroma-background-color-value");
+  const chromaSimilarity = card.querySelector(".chroma-similarity");
+  const chromaSimilarityValue = card.querySelector(".chroma-similarity-value");
+  const chromaBlend = card.querySelector(".chroma-blend");
+  const chromaBlendValue = card.querySelector(".chroma-blend-value");
   const captionPreviewLayer = card.querySelector(".caption-preview-layer");
   const captionPreviewText = card.querySelector(".caption-preview-text");
   const customWatermarkPreview = card.querySelector(".custom-watermark-preview");
@@ -1880,6 +1963,11 @@ function installTrimmer(project, clip, card) {
     memeStart: Number.isFinite(Number(clip.memeStart)) ? Number(clip.memeStart) : 0,
     memeEnd: Number.isFinite(Number(clip.memeEnd)) ? Number(clip.memeEnd) : Math.max(1, original.end - original.start),
     memeImageUrl: clip.memeImageUrl || "",
+    chromaKeyEnabled: hasCreativeAccess() && clip.chromaKeyEnabled === true,
+    chromaKeyColor: normalizeClientColor(clip.chromaKeyColor || "#00ff00"),
+    chromaBackgroundColor: normalizeClientColor(clip.chromaBackgroundColor || "#111111"),
+    chromaSimilarity: Number.isFinite(Number(clip.chromaSimilarity)) ? Number(clip.chromaSimilarity) : 0.12,
+    chromaBlend: Number.isFinite(Number(clip.chromaBlend)) ? Number(clip.chromaBlend) : 0.06,
     sourceVolume: Number.isFinite(Number(clip.sourceVolume)) ? Number(clip.sourceVolume) : (project.audioTranslation === "dubbed" ? 16 : 100),
     addedAudioVolume: Number.isFinite(Number(clip.addedAudioVolume)) ? Number(clip.addedAudioVolume) : 35,
     audioStart: Number.isFinite(Number(clip.audioStart)) ? Number(clip.audioStart) : 0,
@@ -1932,6 +2020,26 @@ function installTrimmer(project, clip, card) {
   memeBackground.value = state.memeBackground;
   memeImageName.textContent = state.memeImageUrl ? "Overlay image added" : "No image added";
   memeImageRemove.classList.toggle("hidden", !state.memeImageUrl);
+  greenScreenStudio.classList.toggle("pro-active", proEnabled);
+  greenScreenLock.classList.toggle("hidden", proEnabled);
+  greenScreenStudio.querySelector("[data-pro-badge]").textContent = proEnabled ? "PRO ACTIVE" : "PRO";
+  greenScreenStudio.querySelectorAll(".green-screen-controls input,.chroma-toggle input").forEach((control) => {
+    control.disabled = !proEnabled;
+  });
+  chromaEnabled.checked = state.chromaKeyEnabled;
+  chromaKeyColor.value = state.chromaKeyColor;
+  chromaBackgroundColor.value = state.chromaBackgroundColor;
+  chromaSimilarity.value = String(Math.round(state.chromaSimilarity * 100));
+  chromaBlend.value = String(Math.round(state.chromaBlend * 100));
+  const paintGreenScreenControls = () => {
+    chromaKeyColorValue.textContent = state.chromaKeyColor.toUpperCase();
+    chromaBackgroundColorValue.textContent = state.chromaBackgroundColor.toUpperCase();
+    chromaSimilarityValue.textContent = `${Math.round(state.chromaSimilarity * 100)}%`;
+    chromaBlendValue.textContent = `${Math.round(state.chromaBlend * 100)}%`;
+    card.querySelector(".preview-canvas").style.background = state.chromaKeyEnabled ? state.chromaBackgroundColor : "";
+    greenScreenStudio.classList.toggle("enabled", state.chromaKeyEnabled);
+  };
+  paintGreenScreenControls();
   sourceVolume.value = String(state.sourceVolume);
   addedAudioVolume.value = String(state.addedAudioVolume);
   audioStart.value = String(state.audioStart);
@@ -2162,6 +2270,11 @@ function installTrimmer(project, clip, card) {
       memeStart: state.memeStart,
       memeEnd: state.memeEnd,
       memeImageUrl: state.memeImageUrl,
+      chromaKeyEnabled: state.chromaKeyEnabled,
+      chromaKeyColor: state.chromaKeyColor,
+      chromaBackgroundColor: state.chromaBackgroundColor,
+      chromaSimilarity: state.chromaSimilarity,
+      chromaBlend: state.chromaBlend,
       sourceVolume: state.sourceVolume,
       addedAudioVolume: state.addedAudioVolume,
       audioStart: state.audioStart,
@@ -2246,6 +2359,18 @@ function installTrimmer(project, clip, card) {
     markCutChanged();
     queueSave();
   });
+  [
+    [chromaEnabled, "change", () => { state.chromaKeyEnabled = chromaEnabled.checked; }],
+    [chromaKeyColor, "input", () => { state.chromaKeyColor = chromaKeyColor.value; }],
+    [chromaBackgroundColor, "input", () => { state.chromaBackgroundColor = chromaBackgroundColor.value; }],
+    [chromaSimilarity, "input", () => { state.chromaSimilarity = Number(chromaSimilarity.value) / 100; }],
+    [chromaBlend, "input", () => { state.chromaBlend = Number(chromaBlend.value) / 100; }],
+  ].forEach(([control, eventName, update]) => control.addEventListener(eventName, () => {
+    update();
+    paintGreenScreenControls();
+    markCutChanged();
+    queueSave();
+  }));
   [
     [sourceVolume, "input", () => { state.sourceVolume = Number(sourceVolume.value); }],
     [addedAudioVolume, "input", () => { state.addedAudioVolume = Number(addedAudioVolume.value); }],

@@ -8,8 +8,8 @@ The goal is feature parity with a serious AI clipping editor, then differentiati
 - Per-file **AI + captions** or **Manual · no transcript** processing
 - Artist/Music, Podcast/Interview, Monologue/Talking Head, and Smart Detect editorial modes
 - Batch-wide Smart/15/30/45/60/90-second AI Auto-Klip recipes with editable results
-- Optional 15/30/45/60/90-second multi-source Batch Auto-Mix with four editing rhythms
-- Final Auto-Mix sequence editor with source preview, precise trims, reorder, remove, per-moment caption correction, and rebuild
+- Optional 15/30/45/60/90-second multi-source Batch Auto-Mix with four editing rhythms and eight automatic transition choices
+- Final Auto-Mix sequence editor with source preview, precise trims, reorder, remove, per-moment caption correction, per-moment transitions, Green Screen Studio controls, and rebuild
 - Final Auto-Mix audio mixer with sound uploads, two-channel volume, presets, start offset, looping, fades, and dialogue ducking
 - Timestamped transcription, ranked clip recommendations, six-factor scoring, and reasons for every selection
 - Browser-safe source previews, exact start/end controls, and a 90-second maximum
@@ -25,7 +25,7 @@ The goal is feature parity with a serious AI clipping editor, then differentiati
 - Reframing modes for 9:16, 1:1, and 16:9 with face/active-speaker tracking
 - Advanced caption themes with per-word emphasis, custom fonts/colors, animation, and safe-zone guides
 - Brand kits with image logos, fonts, colors, reusable intros/outros, CTA overlays, and templates
-- B-roll, images, music, transitions, text overlays, audio cleanup, and volume controls
+- B-roll, image/video green-screen replacements, text overlays, audio cleanup, and advanced volume controls
 - Multiple export presets plus SRT/VTT and Premiere/DaVinci timeline exports
 
 ## KlipPharma judgment advantage

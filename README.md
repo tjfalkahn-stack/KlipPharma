@@ -4,6 +4,12 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
+## Version 0.29.17 — Completed-upload banner cleanup
+
+- Hides the global upload banner as soon as every source file is safely handed to server-side processing.
+- Ignores completed historical upload sessions when restoring the dashboard, preventing stale “queued for processing” banners over finished results.
+- Keeps interrupted uploads visible with actionable resume guidance while preserving already completed videos.
+
 ## Version 0.29.16 — Auto-Mix video-track recovery
 
 - Uses the real video-stream duration when audio or container metadata runs longer than the picture.

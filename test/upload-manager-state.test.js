@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   pendingUploadSessions,
+  restorableUploadSessions,
   selectUploadSessionNeedingDevice,
   serverSessionsConfirmedByBrowser,
   uploadFileNeedsDevice,
@@ -52,6 +53,27 @@ test("only sessions that still need the browser are persisted", () => {
   const cancelled = { id: "cancelled", files: [{ status: "cancelled" }] };
 
   assert.deepEqual(pendingUploadSessions([completed, pending, cancelled]), [pending]);
+});
+
+test("stale interrupted snapshots are removed while intentional pauses remain resumable", () => {
+  const now = Date.parse("2026-08-24T17:30:00.000Z");
+  const staleInterrupted = {
+    id: "stale-interrupted",
+    updatedAt: "2026-08-24T12:00:00.000Z",
+    files: [{ status: "interrupted" }],
+  };
+  const paused = {
+    id: "paused",
+    updatedAt: "2026-08-23T12:00:00.000Z",
+    files: [{ status: "paused" }],
+  };
+  const recent = {
+    id: "recent",
+    updatedAt: "2026-08-24T17:20:00.000Z",
+    files: [{ status: "ready_to_upload" }],
+  };
+
+  assert.deepEqual(restorableUploadSessions([staleInterrupted, paused, recent], { now }), [paused, recent]);
 });
 
 test("a browser upload snapshot is restored only for its authenticated owner", () => {

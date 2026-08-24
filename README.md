@@ -4,6 +4,13 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 
 **We pick the dopest klips!**
 
+## Version 0.29.20 — Definitive stale phone-card eviction
+
+- Removes abandoned or failed browser upload snapshots after 30 minutes, even when an old phone tab sends the stale session id back to the server.
+- Preserves only intentionally paused uploads beyond the stale window so a creator can still resume them later.
+- Applies the same expiration rule in the browser before the upload-session request, so a failed API response cannot leave the stale card pinned on refresh.
+- Busts the iOS dashboard assets again to guarantee the repaired restore path loads.
+
 ## Version 0.29.19 — Server-enforced stale upload cleanup
 
 - Stops the upload-session API from returning abandoned sessions to older cached dashboards after 30 minutes of inactivity.

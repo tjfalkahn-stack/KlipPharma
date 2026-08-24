@@ -5,8 +5,30 @@ export function uploadFileNeedsDevice(file) {
   return !TRANSFERRED_STATUSES.has(String(file.status || ""));
 }
 
+export const defaultUploadSnapshotIdleMs = 30 * 60 * 1000;
+
 export function uploadSessionNeedsDevice(session) {
   return Boolean(session?.files?.some(uploadFileNeedsDevice));
+}
+
+export function uploadSessionWasExplicitlyPaused(session) {
+  return Boolean(session?.files?.some((file) => (
+    uploadFileNeedsDevice(file) && String(file?.status || "") === "paused"
+  )));
+}
+
+export function uploadSessionCanRestoreFromSnapshot(session, {
+  now = Date.now(),
+  maxIdleMs = defaultUploadSnapshotIdleMs,
+} = {}) {
+  if (!uploadSessionNeedsDevice(session)) return false;
+  if (uploadSessionWasExplicitlyPaused(session)) return true;
+  const updatedAt = Date.parse(session?.updatedAt || session?.createdAt || "");
+  return Number.isFinite(updatedAt) && Math.max(0, Number(now) - updatedAt) <= Number(maxIdleMs);
+}
+
+export function restorableUploadSessions(sessions, options = {}) {
+  return [...(sessions || [])].filter((session) => uploadSessionCanRestoreFromSnapshot(session, options));
 }
 
 export function pendingUploadSessions(sessions) {

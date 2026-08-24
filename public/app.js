@@ -1,5 +1,7 @@
+import { selectUploadSessionNeedingDevice, uploadFileNeedsDevice } from "./upload-manager-state.js?v=0.29.17";
+
 const $ = (selector) => document.querySelector(selector);
-const ASSET_VERSION = "0.29.16";
+const ASSET_VERSION = "0.29.17";
 window.__KLIPPHARMA_ASSET_VERSION__ = ASSET_VERSION;
 console.info("[KlipPharma dashboard] asset loaded", { version: ASSET_VERSION, path: window.location.pathname });
 
@@ -623,22 +625,30 @@ function uploadStateCopy(file) {
 }
 
 function renderGlobalUploadManager() {
-  const session = uploadManager.sessions.get(uploadManager.activeSessionId) || [...uploadManager.sessions.values()][0];
+  const session = selectUploadSessionNeedingDevice(uploadManager.sessions.values(), uploadManager.activeSessionId);
   if (!session) {
+    uploadManager.activeSessionId = null;
     globalUploadManagerPanel?.classList.add("hidden");
     return;
   }
+  uploadManager.activeSessionId = session.id;
   const total = session.files.reduce((sum, file) => sum + Number(file.size || 0), 0);
   const loaded = session.files.reduce((sum, file) => sum + Math.min(Number(file.size || 0), Number(file.uploadedBytes || 0)), 0);
   const percent = total ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
   const completeCount = session.files.filter((file) => file.projectId || file.status === "queued_for_processing").length;
-  const active = session.files.some((file) => ["uploading", "ready_to_upload", "preparing", "paused", "interrupted"].includes(file.status));
-  globalUploadManagerPanel?.classList.toggle("hidden", !active && completeCount === 0);
-  $("#globalUploadState").textContent = active ? "UPLOADS ACTIVE" : "PROCESSING";
-  $("#globalUploadTitle").textContent = `${completeCount} of ${session.files.length} queued for processing`;
-  $("#globalUploadDetail").textContent = active
+  const pendingCount = session.files.filter(uploadFileNeedsDevice).length;
+  const interruptedCount = session.files.filter((file) => uploadFileNeedsDevice(file) && ["failed", "interrupted"].includes(file.status)).length;
+  const active = session.files.some((file) => uploadFileNeedsDevice(file) && ["uploading", "ready_to_upload", "preparing", "paused"].includes(file.status));
+  globalUploadManagerPanel?.classList.remove("hidden");
+  $("#globalUploadState").textContent = interruptedCount ? "UPLOAD NEEDS ATTENTION" : "UPLOADS ACTIVE";
+  $("#globalUploadTitle").textContent = interruptedCount
+    ? `${interruptedCount} ${interruptedCount === 1 ? "video needs" : "videos need"} to resume`
+    : `${completeCount} of ${session.files.length} safely uploaded`;
+  $("#globalUploadDetail").textContent = interruptedCount
+    ? "Return to the upload screen and reselect the interrupted file. Completed videos are safe."
+    : active
     ? `Keep your browser active until upload completes. ${formatBytes(loaded)} of ${formatBytes(total)} transferred.`
-    : "Upload complete. KlipPharma will keep processing—even if you close this page.";
+    : `${pendingCount} ${pendingCount === 1 ? "video still needs" : "videos still need"} this device to finish uploading.`;
   $("#globalUploadMeter").style.width = `${percent}%`;
   globalUploadPause.disabled = uploadManager.paused || !active;
   globalUploadResume.disabled = !uploadManager.paused;

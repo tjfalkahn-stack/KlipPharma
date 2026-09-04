@@ -36,6 +36,7 @@ import {
   listKlipdoseDatabaseProjectDebug,
   loadDatabaseProjects,
   loadDatabaseUploadSession,
+  queryDatabase,
   loadDatabaseUploadSessions,
   recordBillingAgreement,
   removeWorkspaceMember,
@@ -115,6 +116,13 @@ import {
   isYouTubeAuthRequiredError,
   youtubeImportFailurePatch,
 } from "./lib/youtube-cookies.js";
+import { LOCAL_WORKSPACE_ID } from "./lib/campaign-constants.js";
+import { createMemoryCampaignStore } from "./lib/campaign-store.js";
+import { createPostgresCampaignStore } from "./lib/campaign-postgres.js";
+import { createCampaignRouter } from "./lib/campaign-routes.js";
+import { createMetricsRegistry } from "./lib/social-metrics.js";
+import { resolveWorkspaceCompute } from "./lib/workspace-compute.js";
+import { buildAutoklipFeedbackContext } from "./lib/autoklip-feedback.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const storageRoot = process.env.STORAGE_ROOT ? path.resolve(process.env.STORAGE_ROOT) : path.join(__dirname, "storage");
@@ -126,6 +134,19 @@ fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(exportDir, { recursive: true });
 fs.mkdirSync(projectsDir, { recursive: true });
 fs.mkdirSync(uploadSessionsDir, { recursive: true });
+const campaignsDir = path.join(storageRoot, "campaigns");
+fs.mkdirSync(campaignsDir, { recursive: true });
+const workspaceCompute = resolveWorkspaceCompute(process.env, { defaultStorageRoot: storageRoot });
+const allowAggregatedLearning = new Set(["true", "1", "yes", "on"])
+  .has(String(process.env.KLIPPHARMA_AGGREGATED_LEARNING || "").trim().toLowerCase());
+let campaignStore = createMemoryCampaignStore({ persistDir: campaignsDir });
+const metricsRegistry = createMetricsRegistry({
+  getConnection: async (provider, context = {}) => {
+    const userId = context.userId;
+    if (!userId || userId === "local-owner") return null;
+    return getSocialConnection(userId, provider);
+  },
+});
 
 const app = express();
 const openaiApiKey = normalizeOpenAiApiKey(process.env.OPENAI_API_KEY);
@@ -439,7 +460,22 @@ app.use(attachUser);
 app.use("/exports", requireUser, authorizeExport, express.static(exportDir));
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, name: "KlipPharma", aiConfigured: Boolean(openaiApiKey), ffmpeg: true, authMode, uploadMode: objectStorageConfigured ? "direct" : "local", proFeaturesOpen, billingConfigured });
+  res.json({
+    ok: true,
+    name: "KlipPharma",
+    aiConfigured: Boolean(openaiApiKey),
+    ffmpeg: true,
+    authMode,
+    uploadMode: objectStorageConfigured ? "direct" : "local",
+    proFeaturesOpen,
+    billingConfigured,
+    campaigns: true,
+    campaignStore: campaignStore.mode,
+    workspaceCompute: {
+      usingExternalWorkspace: workspaceCompute.usingExternalWorkspace,
+      fallbackReason: workspaceCompute.fallbackReason,
+    },
+  });
 });
 
 app.get("/api/auth/session", (req, res) => {
@@ -1221,6 +1257,27 @@ app.post("/api/integrations/tiktok/publish/status", requireUser, async (req, res
   }
 });
 
+let campaignRouter = null;
+function getCampaignRouter() {
+  if (!campaignRouter) {
+    campaignRouter = createCampaignRouter({
+      store: campaignStore,
+      metricsRegistry,
+      getAccessibleJob: (request, id) => ownedJob(request, id),
+      listAccessibleJobs: (request) => [...jobs.values()].filter((job) => canAccessJob(request, job)).map((job) => ({
+        id: job.id,
+        title: job.originalName || job.title,
+        status: job.status,
+        clips: job.clips,
+        originalName: job.originalName,
+      })),
+      compute: workspaceCompute,
+      allowAggregatedLearning,
+    });
+  }
+  return campaignRouter;
+}
+app.use("/api/campaigns", requireUser, (req, res, next) => getCampaignRouter()(req, res, next));
 app.use("/api/uploads", requireUser);
 app.use("/api/projects", requireUser);
 app.use("/api/batches", requireUser);
@@ -3109,6 +3166,17 @@ async function chooseClips(job) {
   const lengthRule = Number.isFinite(requestedLength)
     ? `The batch recipe requires every initial AI cut to be no longer than ${requestedLength} seconds. Aim for a complete moment between ${Math.max(8, requestedLength - Math.min(8, Math.round(requestedLength * 0.2)))} and ${requestedLength} seconds. This batch rule overrides any preferred range in the creator-mode guidance.`
     : "Use Smart length: choose the shortest duration that preserves the complete hook, context, and payoff, from 15 to 90 seconds.";
+  let historicalBlock = "HISTORICAL SIGNAL: none yet for this workspace/creator. Rank from transcript quality only. Do not claim virality.";
+  try {
+    const feedback = await buildAutoklipFeedbackContext(campaignStore, {
+      workspaceId: job.workspaceId || LOCAL_WORKSPACE_ID,
+      creatorId: job.userId,
+      allowAggregated: allowAggregatedLearning,
+    });
+    historicalBlock = feedback.promptBlock;
+  } catch (error) {
+    console.error("AutoKlip historical signal unavailable:", error.message);
+  }
   const response = await openai.chat.completions.create({
     model: process.env.AI_TEXT_MODEL || "gpt-4o-mini",
     temperature: 0.3,
@@ -3120,7 +3188,7 @@ async function chooseClips(job) {
       },
       {
         role: "user",
-        content: `Audience: ${job.audience}\nGoal: ${job.goal}\nPlatform: ${job.platform}\nCreator mode: ${creatorMode.label}\n\nBATCH AUTO-KLIP LENGTH\n${lengthRule}\n\nMODE-SPECIFIC EDITORIAL RULES\n${creatorMode.prompt}\n\nReturn the strongest ${requestedOutputCount} non-overlapping clips when the source contains enough qualifying moments, and never return more than ${requestedOutputCount}. Never exceed the batch maximum or 90 seconds. Every selection must begin and end on a complete thought. Each clip needs: start (number), end (number), title, hook, whyChosen, caption, strategy (a short 1-3 word editorial lane), scores object with hook, context, payoff, retention, audienceFit, platformFit (integers 0-100), and overallScore (integer 0-100). Prefer exact transcript boundaries.\n\nTRANSCRIPT\n${transcript.slice(0, 110000)}`,
+        content: `Audience: ${job.audience}\nGoal: ${job.goal}\nPlatform: ${job.platform}\nCreator mode: ${creatorMode.label}\n\nBATCH AUTO-KLIP LENGTH\n${lengthRule}\n\nMODE-SPECIFIC EDITORIAL RULES\n${creatorMode.prompt}\n\n${historicalBlock}\n\nReturn the strongest ${requestedOutputCount} non-overlapping clips when the source contains enough qualifying moments, and never return more than ${requestedOutputCount}. Never exceed the batch maximum or 90 seconds. Every selection must begin and end on a complete thought. Each clip needs: start (number), end (number), title, hook, whyChosen, caption, strategy (a short 1-3 word editorial lane), scores object with hook, context, payoff, retention, audienceFit, platformFit (integers 0-100), and overallScore (integer 0-100). Prefer exact transcript boundaries. Treat historical signals as ranking hints only; never invent performance claims.\n\nTRANSCRIPT\n${transcript.slice(0, 110000)}`,
       },
     ],
   });
@@ -5566,6 +5634,10 @@ const port = Number(process.env.PORT || 3100);
 
 async function startServer() {
   await initializeDatabase();
+  if (databaseConfigured) {
+    campaignStore = createPostgresCampaignStore((text, params) => queryDatabase(text, params));
+    campaignRouter = null;
+  }
   loadPersistedUploadSessions();
   await loadPostgresUploadSessions();
   await cleanupAbandonedUploadSessions();

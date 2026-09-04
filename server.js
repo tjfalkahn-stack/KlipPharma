@@ -32,6 +32,8 @@ import {
   getSocialConnection,
   getWorkspaceContext,
   initializeDatabase,
+  listSocialConnections,
+  connectDatabase,
   listWorkspaceInvitations,
   listKlipdoseDatabaseProjectDebug,
   loadDatabaseProjects,
@@ -121,7 +123,7 @@ import { createMemoryCampaignStore } from "./lib/campaign-store.js";
 import { createPostgresCampaignStore } from "./lib/campaign-postgres.js";
 import { createCampaignRouter } from "./lib/campaign-routes.js";
 import { createMetricsRegistry } from "./lib/social-metrics.js";
-import { resolveWorkspaceCompute } from "./lib/workspace-compute.js";
+import { resolveWorkspaceCompute, ensureComputeDirectories } from "./lib/workspace-compute.js";
 import { buildAutoklipFeedbackContext } from "./lib/autoklip-feedback.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -136,15 +138,20 @@ fs.mkdirSync(projectsDir, { recursive: true });
 fs.mkdirSync(uploadSessionsDir, { recursive: true });
 const campaignsDir = path.join(storageRoot, "campaigns");
 fs.mkdirSync(campaignsDir, { recursive: true });
-const workspaceCompute = resolveWorkspaceCompute(process.env, { defaultStorageRoot: storageRoot });
+const workspaceCompute = ensureComputeDirectories(
+  resolveWorkspaceCompute(process.env, { defaultStorageRoot: storageRoot }),
+);
 const allowAggregatedLearning = new Set(["true", "1", "yes", "on"])
   .has(String(process.env.KLIPPHARMA_AGGREGATED_LEARNING || "").trim().toLowerCase());
 let campaignStore = createMemoryCampaignStore({ persistDir: campaignsDir });
 const metricsRegistry = createMetricsRegistry({
   getConnection: async (provider, context = {}) => {
     const userId = context.userId;
-    if (!userId || userId === "local-owner") return null;
-    return getSocialConnection(userId, provider);
+    if (!userId) return null;
+    if (userId === "local-owner") {
+      return localSocialConnections.get(`${userId}:${provider}`) || null;
+    }
+    return getSocialConnection(userId, provider, { workspaceId: context.workspaceId || null });
   },
 });
 
@@ -1273,6 +1280,19 @@ function getCampaignRouter() {
       })),
       compute: workspaceCompute,
       allowAggregatedLearning,
+      listConnectedPlatforms: async (userId) => {
+        if (userId === "local-owner") {
+          const platforms = new Set();
+          for (const [key, connection] of localSocialConnections) {
+            if (String(key).startsWith(`${userId}:`) && connection) {
+              platforms.add(connection.provider || String(key).split(":")[1]);
+            }
+          }
+          return [...platforms];
+        }
+        const connections = await listSocialConnections(userId);
+        return connections.map((item) => item.provider);
+      },
     });
   }
   return campaignRouter;
@@ -5635,7 +5655,10 @@ const port = Number(process.env.PORT || 3100);
 async function startServer() {
   await initializeDatabase();
   if (databaseConfigured) {
-    campaignStore = createPostgresCampaignStore((text, params) => queryDatabase(text, params));
+    campaignStore = createPostgresCampaignStore(
+      (text, params) => queryDatabase(text, params),
+      { connect: () => connectDatabase() },
+    );
     campaignRouter = null;
   }
   loadPersistedUploadSessions();

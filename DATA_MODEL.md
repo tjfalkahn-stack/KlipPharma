@@ -24,7 +24,7 @@ Primary operating object. Fields match the product spec: identity, workspace, cr
 
 ### campaign_rights
 
-One row per campaign: ownership declaration, usage permissions, music/audio rights, editing rules, brand guidelines, prohibited uses, expiration, takedown procedure, disclosure requirements, territory restrictions.
+One row per campaign: ownership declaration, usage permissions, music/audio rights, editing rules, brand guidelines, prohibited uses, expiration, takedown procedure, disclosure requirements, territory restrictions, `rights_version`, `content_hash`, and the acknowledged version/hash/actor/timestamp. Material edits increment the version and invalidate the prior acknowledgment.
 
 ### campaign_participants
 
@@ -36,7 +36,7 @@ Display name, username, categories, location/region. Social handles and follower
 
 ### campaign_clips (Klip Vault)
 
-Approved or candidate clips. Tracks source project/media, timestamps, duration, aspect ratio, transcript, caption package, hook, title, description, thumbnail, processing version, approval status, performance score, usage count. AI output cannot skip `CANDIDATE`.
+Approved or candidate clips. Tracks source project/media, timestamps, duration, aspect ratio, transcript, caption package, hook, title, description, thumbnail, processing version, content fingerprint, approval status, performance score, usage count. AI output cannot skip `CANDIDATE`. A fingerprint change on re-import resets `APPROVED` clips back to `CANDIDATE`.
 
 ### campaign_submissions
 

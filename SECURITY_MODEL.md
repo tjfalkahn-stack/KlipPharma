@@ -10,22 +10,24 @@
 
 - Every campaign API resolves `workspace_id` from the signed-in user (or `local-workspace` in local-owner mode).
 - Cross-workspace reads/writes return 404, not 403, to avoid leaking campaign existence.
-- Business viewers can review campaign analytics they are granted, but cannot change budget, rights, or payouts.
-- Klipper marketplace endpoints only expose fields declared public on `LIVE` campaigns.
+- Business viewers are mapped to a read-only campaign `VIEWER` role. They cannot approve vault clips, verify submissions, approve participants, review payouts, or mutate rights/campaigns.
+- Only explicitly assigned campaign `REVIEWER` participants (plus owner/admin/manager) have review permissions.
+- Klipper marketplace endpoints only expose fields declared public on `LIVE` campaigns. External Klippers are authorized by participation + user id, not by their default workspace.
 
 ## Role-based permissions
 
-| Action | CAMPAIGN_OWNER | ADMIN | MANAGER | EDITOR | REVIEWER | KLIPPER |
-| --- | --- | --- | --- | --- | --- | --- |
-| Create/edit campaign | ✓ | ✓ | ✓ | | | |
-| Change status LIVE/PAUSED | ✓ | ✓ | ✓ | | | |
-| Approve vault clips | ✓ | ✓ | ✓ | ✓ | ✓ | |
-| Join/submit | | | | | | ✓ |
-| Verify submissions | ✓ | ✓ | ✓ | | ✓ | |
-| Approve payouts | ✓ | ✓ | | | | |
-| View financials | ✓ | ✓ | ✓ | | | own earnings |
+| Action | CAMPAIGN_OWNER | ADMIN | MANAGER | EDITOR | REVIEWER | VIEWER | KLIPPER |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Create/edit campaign | ✓ | ✓ | ✓ | | | | |
+| Change status LIVE/PAUSED | ✓ | ✓ | ✓ | | | | |
+| Approve vault clips | ✓ | ✓ | ✓ | ✓ | ✓ | | |
+| Join/submit | | | | | | | ✓ |
+| Verify submissions | ✓ | ✓ | ✓ | | ✓ | | |
+| Approve payouts | ✓ | ✓ | | | | | |
+| View financials | ✓ | ✓ | ✓ | | | | own earnings |
+| Read campaign/analytics | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | own history |
 
-Workspace owner/admin map to campaign admin capabilities on campaigns they own. Workspace viewers cannot mutate campaigns.
+Workspace owner/admin map to campaign admin capabilities on campaigns in their workspace. Workspace viewers map to read-only `VIEWER` and cannot mutate or review. Campaign create is limited to workspace owner/admin (or the personal-workspace owner in local/non-business mode).
 
 ## Media access
 
@@ -48,7 +50,7 @@ Zod (and matching pure validators used by tests) constrain campaign fields, mone
 
 ## Rate limiting
 
-Campaign writes, joins, and submissions are rate-limited per user+IP in addition to the existing auth limiter.
+Campaign writes, joins, and submissions are rate-limited per user+IP with a **bounded in-process map** and expiry sweep. GET/HEAD/OPTIONS are not limited by this limiter. The store is per Node process; multi-replica deployments do not share counts and should place a shared limiter (Redis, edge, or platform WAF) in front if global write quotas are required.
 
 ## Audit logging
 

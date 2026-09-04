@@ -6,7 +6,10 @@ Additive only. No table drops, no project JSON rewrites, no R2 bucket changes, n
 
 ## Steps
 
-1. Deploy application code that initializes new tables on boot (`initializeCampaignNetworkSchema`) **and** ships `migrations/202609040001_campaign_network.sql` for operators who apply SQL separately.
+1. Deploy application code that initializes new tables on boot (`initializeCampaignNetworkSchema`, which applies every `migrations/*campaign_network*.sql` file) **and** ship:
+   - `migrations/202609040001_campaign_network.sql`
+   - `migrations/202609040002_campaign_network_hardening.sql`
+   Operators who apply SQL separately should run both files in order. Do not rely only on boot-time schema creation as the production release record.
 2. Set new optional environment variables. Defaults keep the studio working if they are omitted.
 3. Existing AutoKlip jobs continue to load from `storage/projects` / `projects` JSONB.
 4. Creators opt in by opening **Campaigns** and creating a DRAFT campaign. No backfill is required.

@@ -9,6 +9,7 @@ KlipPharma turns long-form video into ranked, captioned vertical clips and can a
 - Adds first-class Campaigns, Klip Vault approval, Klipper marketplace, submission verification, analytics, feature store, and a review-only payout ledger.
 - Extends AutoKlip with workspace-scoped **historical signals**. This is not a virality predictor.
 - Keeps the existing Express studio, PostgreSQL accounts, Cloudflare R2 uploads, and Railway/Docker deploy path.
+- Checks: `npm run check:syntax`, `npm run lint` (ESLint), `npm run typecheck` (TypeScript checkJs), `npm test`, `npm run validate:production`. GitHub Actions CI on pull requests uses a PostgreSQL service container. This does not deploy production.
 
 See `IMPLEMENTATION_PLAN.md`, `ARCHITECTURE.md`, `CAMPAIGN_ENGINE.md`, and `docs/RUNBOOK.md`.
 

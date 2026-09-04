@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "target": "ES2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "skipLibCheck": true,
+    "maxNodeModuleJsDepth": 0,
+    "strict": false,
+    "types": ["node"],
+    "lib": ["ES2022"],
+    "noEmitOnError": true
+  },
+  "include": [
+    "lib/campaign-*.js",
+    "lib/clip-features.js",
+    "lib/social-metrics.js",
+    "lib/workspace-compute.js",
+    "lib/rate-limit.js",
+    "lib/autoklip-feedback.js",
+    "lib/fpai-adapters.js",
+    "lib/campaign-hash.js",
+    "lib/campaign-regions.js",
+    "lib/campaign-audit.js"
+  ],
+  "exclude": ["node_modules", "storage", "test", "public"]
+}

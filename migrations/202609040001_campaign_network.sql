@@ -9,12 +9,12 @@ CREATE TABLE IF NOT EXISTS campaigns (
   campaign_type TEXT NOT NULL DEFAULT 'clip_distribution',
   status TEXT NOT NULL DEFAULT 'DRAFT'
     CHECK (status IN ('DRAFT', 'READY', 'LIVE', 'PAUSED', 'COMPLETED', 'ARCHIVED')),
-  budget NUMERIC(14,2) NOT NULL DEFAULT 0,
+  budget NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (budget >= 0),
   currency TEXT NOT NULL DEFAULT 'USD',
   start_date TIMESTAMPTZ,
   end_date TIMESTAMPTZ,
-  target_views BIGINT NOT NULL DEFAULT 0,
-  target_posts INTEGER NOT NULL DEFAULT 0,
+  target_views BIGINT NOT NULL DEFAULT 0 CHECK (target_views >= 0),
+  target_posts INTEGER NOT NULL DEFAULT 0 CHECK (target_posts >= 0),
   target_platforms TEXT[] NOT NULL DEFAULT '{}',
   allowed_regions TEXT[] NOT NULL DEFAULT '{}',
   campaign_rules JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -22,8 +22,8 @@ CREATE TABLE IF NOT EXISTS campaigns (
   prohibited_content JSONB NOT NULL DEFAULT '{}'::jsonb,
   payout_model TEXT NOT NULL DEFAULT 'NONE'
     CHECK (payout_model IN ('CPM', 'FLAT_PER_POST', 'HYBRID', 'NONE')),
-  payout_rate NUMERIC(14,4) NOT NULL DEFAULT 0,
-  payout_cap NUMERIC(14,2),
+  payout_rate NUMERIC(14,4) NOT NULL DEFAULT 0 CHECK (payout_rate >= 0),
+  payout_cap NUMERIC(14,2) CHECK (payout_cap IS NULL OR payout_cap >= 0),
   approval_required BOOLEAN NOT NULL DEFAULT TRUE,
   source_media_ids TEXT[] NOT NULL DEFAULT '{}',
   created_by TEXT NOT NULL,
@@ -51,6 +51,10 @@ CREATE TABLE IF NOT EXISTS campaign_rights (
   territory_restrictions TEXT NOT NULL DEFAULT '',
   acknowledged_by TEXT,
   acknowledged_at TIMESTAMPTZ,
+  rights_version INTEGER NOT NULL DEFAULT 1 CHECK (rights_version >= 1),
+  content_hash TEXT,
+  acknowledged_version INTEGER,
+  acknowledged_hash TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -66,10 +70,10 @@ CREATE TABLE IF NOT EXISTS klipper_profiles (
   categories TEXT[] NOT NULL DEFAULT '{}',
   location_region TEXT,
   campaign_history JSONB NOT NULL DEFAULT '[]'::jsonb,
-  approved_submissions INTEGER NOT NULL DEFAULT 0,
-  rejected_submissions INTEGER NOT NULL DEFAULT 0,
-  verified_views BIGINT NOT NULL DEFAULT 0,
-  earnings_calculated NUMERIC(14,2) NOT NULL DEFAULT 0,
+  approved_submissions INTEGER NOT NULL DEFAULT 0 CHECK (approved_submissions >= 0),
+  rejected_submissions INTEGER NOT NULL DEFAULT 0 CHECK (rejected_submissions >= 0),
+  verified_views BIGINT NOT NULL DEFAULT 0 CHECK (verified_views >= 0),
+  earnings_calculated NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (earnings_calculated >= 0),
   reliability_score INTEGER,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -98,7 +102,7 @@ CREATE TABLE IF NOT EXISTS campaign_participants (
   user_id TEXT NOT NULL,
   klipper_id UUID REFERENCES klipper_profiles(id) ON DELETE SET NULL,
   role TEXT NOT NULL
-    CHECK (role IN ('CAMPAIGN_OWNER', 'MANAGER', 'EDITOR', 'KLIPPER', 'REVIEWER', 'ADMIN')),
+    CHECK (role IN ('CAMPAIGN_OWNER', 'MANAGER', 'EDITOR', 'KLIPPER', 'REVIEWER', 'ADMIN', 'VIEWER')),
   status TEXT NOT NULL DEFAULT 'ACTIVE'
     CHECK (status IN ('INVITED', 'APPLIED', 'ACTIVE', 'REJECTED', 'REMOVED')),
   region TEXT,
@@ -129,10 +133,11 @@ CREATE TABLE IF NOT EXISTS campaign_clips (
   description TEXT NOT NULL DEFAULT '',
   thumbnail TEXT,
   processing_version TEXT NOT NULL DEFAULT 'autoklip-v1',
+  content_fingerprint TEXT,
   approval_status TEXT NOT NULL DEFAULT 'CANDIDATE'
     CHECK (approval_status IN ('CANDIDATE', 'APPROVED', 'REJECTED', 'ARCHIVED')),
   performance_score INTEGER,
-  usage_count INTEGER NOT NULL DEFAULT 0,
+  usage_count INTEGER NOT NULL DEFAULT 0 CHECK (usage_count >= 0),
   approved_by TEXT,
   approved_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -141,6 +146,9 @@ CREATE TABLE IF NOT EXISTS campaign_clips (
 
 CREATE INDEX IF NOT EXISTS campaign_clips_campaign_idx
   ON campaign_clips(campaign_id, approval_status, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS campaign_clips_source_uidx
+  ON campaign_clips(campaign_id, source_project_id, source_clip_id)
+  WHERE source_project_id IS NOT NULL AND source_clip_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS campaign_submissions (
   id UUID PRIMARY KEY,
@@ -155,6 +163,7 @@ CREATE TABLE IF NOT EXISTS campaign_submissions (
   submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   verification_status TEXT NOT NULL DEFAULT 'PENDING'
     CHECK (verification_status IN ('PENDING', 'VERIFYING', 'VERIFIED', 'REJECTED', 'FLAGGED')),
+  verification_version INTEGER NOT NULL DEFAULT 1 CHECK (verification_version >= 1),
   content_status TEXT NOT NULL DEFAULT 'submitted',
   initial_metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
   latest_metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -166,8 +175,8 @@ CREATE TABLE IF NOT EXISTS campaign_submissions (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS campaign_submissions_url_idx
-  ON campaign_submissions(canonical_url);
+CREATE UNIQUE INDEX IF NOT EXISTS campaign_submissions_workspace_url_idx
+  ON campaign_submissions(workspace_id, canonical_url);
 CREATE INDEX IF NOT EXISTS campaign_submissions_campaign_idx
   ON campaign_submissions(campaign_id, verification_status, submitted_at DESC);
 CREATE INDEX IF NOT EXISTS campaign_submissions_user_idx
@@ -196,6 +205,9 @@ CREATE TABLE IF NOT EXISTS clip_features (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS clip_features_clip_uidx
+  ON clip_features(clip_id);
+
 CREATE INDEX IF NOT EXISTS clip_features_workspace_idx
   ON clip_features(workspace_id, campaign_id);
 
@@ -206,6 +218,7 @@ CREATE TABLE IF NOT EXISTS performance_observations (
   campaign_id UUID REFERENCES campaigns(id) ON DELETE SET NULL,
   clip_id UUID REFERENCES campaign_clips(id) ON DELETE SET NULL,
   submission_id UUID REFERENCES campaign_submissions(id) ON DELETE SET NULL,
+  verification_version INTEGER NOT NULL DEFAULT 1 CHECK (verification_version >= 1),
   aggregated_learning_authorized BOOLEAN NOT NULL DEFAULT FALSE,
   outcomes JSONB NOT NULL DEFAULT '{}'::jsonb,
   feature_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -214,6 +227,8 @@ CREATE TABLE IF NOT EXISTS performance_observations (
 
 CREATE INDEX IF NOT EXISTS performance_observations_workspace_idx
   ON performance_observations(workspace_id, creator_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS performance_observations_submission_version_uidx
+  ON performance_observations(submission_id, verification_version);
 
 CREATE TABLE IF NOT EXISTS campaign_ledger_entries (
   id UUID PRIMARY KEY,
@@ -224,6 +239,7 @@ CREATE TABLE IF NOT EXISTS campaign_ledger_entries (
   entry_type TEXT NOT NULL
     CHECK (entry_type IN (
       'budget',
+      'budget_adjustment',
       'reservation',
       'eligible_payout',
       'approved_payout',
@@ -237,7 +253,9 @@ CREATE TABLE IF NOT EXISTS campaign_ledger_entries (
     CHECK (payout_status IS NULL OR payout_status IN (
       'CALCULATED', 'PENDING_REVIEW', 'APPROVED', 'HELD', 'PAID', 'REJECTED'
     )),
-  amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+  reservation_status TEXT
+    CHECK (reservation_status IS NULL OR reservation_status IN ('ACTIVE', 'RELEASED', 'CONVERTED')),
+  amount NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (amount >= 0),
   currency TEXT NOT NULL DEFAULT 'USD',
   note TEXT NOT NULL DEFAULT '',
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -248,6 +266,12 @@ CREATE TABLE IF NOT EXISTS campaign_ledger_entries (
 
 CREATE INDEX IF NOT EXISTS campaign_ledger_campaign_idx
   ON campaign_ledger_entries(campaign_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS campaign_ledger_eligible_submission_uidx
+  ON campaign_ledger_entries(submission_id)
+  WHERE entry_type = 'eligible_payout' AND submission_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS campaign_ledger_active_reservation_uidx
+  ON campaign_ledger_entries(submission_id)
+  WHERE entry_type = 'reservation' AND reservation_status = 'ACTIVE' AND submission_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS fraud_flags (
   id UUID PRIMARY KEY,

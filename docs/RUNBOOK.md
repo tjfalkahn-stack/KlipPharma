@@ -10,7 +10,10 @@ Operators who apply SQL separately can run:
 
 ```bash
 psql "$DATABASE_URL" -f migrations/202609040001_campaign_network.sql
+psql "$DATABASE_URL" -f migrations/202609040002_campaign_network_hardening.sql
 ```
+
+Boot-time `initializeCampaignNetworkSchema()` applies both files. Do not treat boot-only schema creation as the production release record.
 
 Existing `users`, `projects`, `workspaces`, and `upload_sessions` tables are unchanged.
 

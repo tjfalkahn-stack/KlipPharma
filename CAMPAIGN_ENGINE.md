@@ -13,7 +13,7 @@ DRAFT → READY → LIVE ⇄ PAUSED → COMPLETED → ARCHIVED
 - `COMPLETED` — no new submissions; ledger remains visible
 - `ARCHIVED` — retained for audit, hidden from command center defaults
 
-Invalid transitions are rejected. Going `LIVE` requires title, dates, at least one target platform, rights acknowledgement, and payout model.
+Going `LIVE` requires title, dates, at least one target platform, `rightsComplete()` (required rights fields plus acknowledgment of the current rights version/hash), and payout model.
 
 ## Campaign command center
 

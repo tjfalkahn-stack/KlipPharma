@@ -5,10 +5,11 @@ import {
   serverSessionsConfirmedByBrowser,
   uploadFileNeedsDevice,
   uploadSnapshotBelongsToUser,
-} from "./upload-manager-state.js?v=0.29.20";
+} from "./upload-manager-state.js?v=0.30.0";
+import { initCampaignNetwork } from "./campaigns.js?v=0.30.0";
 
 const $ = (selector) => document.querySelector(selector);
-const ASSET_VERSION = "0.29.20";
+const ASSET_VERSION = "0.30.0";
 window.__KLIPPHARMA_ASSET_VERSION__ = ASSET_VERSION;
 console.info("[KlipPharma dashboard] asset loaded", { version: ASSET_VERSION, path: window.location.pathname });
 
@@ -1625,11 +1626,16 @@ function renderProjectClips(project, grid) {
     installTrimmer(project, clip, card);
     const renderButton = node.querySelector(".render");
     const download = node.querySelector(".download");
+    const sendToVault = node.querySelector(".send-to-vault");
     const tiktokExport = node.querySelector(".tiktok-export");
     const youtubeExport = node.querySelector(".youtube-export");
     const deleteExport = node.querySelector(".delete-export");
     const finalPreview = node.querySelector(".final-render-preview");
     const finalPreviewVideo = node.querySelector(".final-render-video");
+    sendToVault?.classList.remove("hidden");
+    sendToVault?.addEventListener("click", () => {
+      campaignNetwork?.openVaultPicker(project.id, clip.id).catch((error) => toast(error.message || "Could not send that klip to a campaign vault."));
+    });
     if (clip.renderStatus === "ready" && clip.downloadUrl) {
       renderButton.classList.add("hidden");
       download.href = clip.downloadUrl;
@@ -2733,6 +2739,14 @@ function setView(view) {
   uploadView.classList.toggle("hidden", view !== "upload");
   processingView.classList.toggle("hidden", view !== "processing");
   resultsView.classList.toggle("hidden", view !== "results");
+  $("#opsView")?.classList.toggle("hidden", view !== "ops");
+  $("#studioHero")?.classList.toggle("hidden", view !== "upload");
+  const navTarget = view === "upload" ? "home" : view === "results" || view === "processing" ? "autoklip" : view === "ops" ? null : view;
+  if (navTarget) {
+    document.querySelectorAll("[data-studio-nav]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.studioNav === navTarget);
+    });
+  }
   if (view === "processing") {
     processingView.setAttribute("aria-busy", "true");
     processingBack.classList.add("hidden");
@@ -4609,6 +4623,13 @@ function handleStartupParameters() {
   if (youtubeResult === "connected") toast("YouTube connected. Channel details and upload readiness are visible now.");
   if (youtubeResult === "error") toast(message || "YouTube authorization failed.");
 }
+
+const campaignNetwork = initCampaignNetwork({
+  setView,
+  toast,
+  openTeam: () => openDashboard(),
+  getCurrentProjects: () => currentProjects,
+});
 
 bootstrapApplication();
 

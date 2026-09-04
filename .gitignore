@@ -3,7 +3,5 @@ node_modules/
 !.env.example
 storage/uploads/*
 storage/exports/*
-storage/projects/*
-!storage/uploads/.gitkeep
-!storage/exports/.gitkeep
-!storage/projects/.gitkeep
+storage/campaigns/*
+!storage/campaigns/.gitkeep

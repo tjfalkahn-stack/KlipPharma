@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=0.29.20" />
+  <link rel="stylesheet" href="/styles.css?v=0.30.0" />
 </head>
 <body>
   <header class="topbar">
@@ -58,7 +58,18 @@
   </section>
 
   <main id="appShell" class="hidden">
-    <section class="hero">
+    <nav class="studio-nav" id="studioNav" aria-label="KlipPharma studio">
+      <button type="button" data-studio-nav="home" class="active">Home</button>
+      <button type="button" data-studio-nav="create">Create</button>
+      <button type="button" data-studio-nav="autoklip">Auto Klip</button>
+      <button type="button" data-studio-nav="vault">Klip Vault</button>
+      <button type="button" data-studio-nav="campaigns">Campaigns</button>
+      <button type="button" data-studio-nav="distribute">Distribute</button>
+      <button type="button" data-studio-nav="analytics">Analytics</button>
+      <button type="button" data-studio-nav="earnings">Earnings</button>
+      <button type="button" data-studio-nav="team">Team</button>
+    </nav>
+    <section class="hero" id="studioHero">
       <div class="eyebrow"><span></span> AI-powered editorial judgment</div>
       <h1>Your long videos.<br><em>The dopest klips.</em></h1>
       <p>Upload one video or a full batch. Turn podcasts, interviews, and campaigns into ranked, captioned vertical clips—chosen for your audience, not generic virality.</p>
@@ -217,6 +228,18 @@
       <p class="processing-summary" id="processingSummary">We’ll show every upload and processing step here.</p>
       <div class="batch-status" id="batchStatus"></div>
       <button class="secondary processing-back hidden" id="processingBack" type="button">Back to sources</button>
+    </section>
+
+    <section class="ops-view hidden" id="opsView">
+      <header class="ops-head">
+        <div>
+          <p class="kicker" id="opsKicker">CAMPAIGNS</p>
+          <h2 id="opsTitle">Campaign command center</h2>
+          <p id="opsIntro">Create, distribute, measure, and learn — without auto-publishing AI clips or moving money automatically.</p>
+        </div>
+        <div class="ops-head-actions" id="opsHeadActions"></div>
+      </header>
+      <div id="opsPanels"></div>
     </section>
 
     <section class="results hidden" id="resultsView">
@@ -423,6 +446,7 @@
         <div class="actions">
           <button class="render">Build exact final preview</button>
           <a class="download hidden" download>Approve &amp; download MP4</a>
+          <button class="send-to-vault hidden" type="button">Send to Campaign Vault</button>
           <button class="tiktok-export hidden" type="button">Send to TikTok</button>
           <button class="youtube-export hidden" type="button">Send to YouTube</button>
           <button class="delete-export hidden" type="button">Delete rendered MP4</button>
@@ -649,6 +673,6 @@
   </div>
 
   <div class="toast hidden" id="toast"></div>
-  <script src="/app.js?v=0.29.20" type="module"></script>
+  <script src="/app.js?v=0.30.0" type="module"></script>
 </body>
 </html>

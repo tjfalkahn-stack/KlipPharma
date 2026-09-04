@@ -45,6 +45,7 @@ The goal is feature parity with a serious AI clipping editor, then differentiati
 - YouTube/Drive/Dropbox/Zoom/Riverside/URL imports plus watched-channel auto-import
 - Social scheduling and publishing for supported TikTok, Reels, Shorts, LinkedIn, and X workflows
 - Content calendar, platform-specific copy, analytics, experiments, and performance history
+- Campaign Network: Klip Vault approval, Klipper distribution, verification ledger, and AutoKlip historical signals (shipped foundation in 0.30)
 - API, webhooks, Zapier-style automation, batch processing, and reusable workflow presets
 - Responsive/mobile review, editing, approval, and one-tap sharing
 

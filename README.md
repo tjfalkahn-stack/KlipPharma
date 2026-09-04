@@ -1,8 +1,16 @@
 # KlipPharma
 
-KlipPharma turns long-form video into ranked, captioned vertical clips and can also assemble a batch into one CapCut-style Auto-Mix. The night-studio workspace supports mixed AI/manual batch uploads, creator-specific editorial modes, multilingual transcription, translated captions and optional AI-dubbed audio, audience-aware clip scoring, browser-safe previews, adjustable start/end points, editable captions and watermarks, saved project history, feedback, and downloadable 9:16 MP4 exports.
+KlipPharma turns long-form video into ranked, captioned vertical clips and can also assemble a batch into one CapCut-style Auto-Mix. Version 0.30 adds a Campaign Network on top of the existing studio: approve AutoKlip candidates into a Klip Vault, distribute through Klippers, verify public posts, measure performance, and feed historical signals back into AutoKlip — without auto-publishing AI clips or moving money automatically.
 
 **We pick the dopest klips!**
+
+## Version 0.30.0 — Campaign Network + Performance Intelligence
+
+- Adds first-class Campaigns, Klip Vault approval, Klipper marketplace, submission verification, analytics, feature store, and a review-only payout ledger.
+- Extends AutoKlip with workspace-scoped **historical signals**. This is not a virality predictor.
+- Keeps the existing Express studio, PostgreSQL accounts, Cloudflare R2 uploads, and Railway/Docker deploy path.
+
+See `IMPLEMENTATION_PLAN.md`, `ARCHITECTURE.md`, `CAMPAIGN_ENGINE.md`, and `docs/RUNBOOK.md`.
 
 ## Version 0.29.20 — Definitive stale phone-card eviction
 
